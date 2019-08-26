@@ -7,7 +7,12 @@ import (
 	dem "github.com/markus-wa/demoinfocs-golang"
 	//ex "github.com/markus-wa/demoinfocs-golang/examples"
 	events "github.com/markus-wa/demoinfocs-golang/events"
+	common "github.com/markus-wa/demoinfocs-golang/common"
+	"strings"
 )
+
+var current_state=""
+
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
@@ -18,7 +23,7 @@ func exists(path string) (bool, error) {
 func processDemoFile(demPath string,file_id int,dest_dir string){
 	f, err := os.Open(demPath)
 	checkError(err)
-
+	
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Erro no processamento do arquivo!", r)
@@ -38,9 +43,10 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	new_file:=dir_name+"/"+header.MapName+"_"+ strconv.Itoa(file_id)+".txt"
 	file_write, err := os.Create(new_file)
 	checkError(err)
-	current_state:=""
+	
 
 	defer file_write.Close()
+	
 	
 	p.RegisterEventHandler(func(e events.Kill) {
 		killer_team := e.Killer.Team
@@ -63,9 +69,34 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 		}
 	})
 	
+	p.RegisterEventHandler(func(e events.ItemEquip) {
+		
+		if !(e.Player == nil){
+			team_equip := e.Player.Team
+			if team_equip == 2 {
+				current_state+="t_equip "
+			} else if team_equip == 3 {
+				current_state+="ct_equip "
+			}
+			weapon_equipped := strings.ReplaceAll(e.WeaponPtr.Weapon.String()," ","_")
+			weapon_equipped=strings.ReplaceAll(weapon_equipped,"-","_")
+			weapon_equipped=strings.ToLower(weapon_equipped)+" "
+			current_state+=weapon_equipped
+		}
+		
+	})
+	
 	p.RegisterEventHandler(func(e events.RoundStart) {
 		current_state+="round_start "
 	})
+	
+	p.RegisterEventHandler(func(e events.PlayerSpottersChanged) {
+		if !(e.Spotted == nil){
+			processSpotEvent(e.Spotted)
+		}
+		
+	})
+	
 	
 	p.RegisterEventHandler(func(e events.RoundEndOfficial) {
 
@@ -79,6 +110,7 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 
 		current_state+="bomb_plant_begin "
 	})
+	
 	err = p.ParseToEnd()
 	checkError(err)
 
@@ -87,8 +119,26 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	// Parse to end
 }
 
+func processSpotEvent(player *common.Player){
+	if !(player.TeamState == nil){
+	
+		enemy_team := player.TeamState.Opponent.Members()
+		for _,enemy_player := range enemy_team {
+			if player.IsSpottedBy(enemy_player){
+				if player.Team == 2 {
+					current_state+="t_player_spotted "
+				} else if player.Team == 3 {
+					current_state+="ct_player_spotted "
+				}
+				
+			}
+		}	
+	}
+}
+
 // Run like this: go run print_events.go -demo /path/to/demo.dem
 func main() {
+	
 	dem_path:= os.Args[1]
 	file_id_str:=os.Args[2]
 	dest_dir:=os.Args[3]
