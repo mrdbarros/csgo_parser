@@ -15,7 +15,7 @@ func exists(path string) (bool, error) {
 	if os.IsNotExist(err) { return false, nil }
         return true, err
 }
-func processDemoFile(demPath string,file_id int){
+func processDemoFile(demPath string,file_id int,dest_dir string){
 	f, err := os.Open(demPath)
 	checkError(err)
 
@@ -29,7 +29,7 @@ func processDemoFile(demPath string,file_id int){
 	header, err := p.ParseHeader()
 	checkError(err)
 	fmt.Println("Map:", header.MapName)
-	dir_name:="/home/jupyter/mrdbarros/csgo_analyze/data/"+header.MapName
+	dir_name:=dest_dir+"/"+header.MapName
 	dir_exists,_:=exists(dir_name)
 	if !dir_exists{
 		err=os.Mkdir(dir_name,0700)
@@ -91,9 +91,10 @@ func processDemoFile(demPath string,file_id int){
 func main() {
 	dem_path:= os.Args[1]
 	file_id_str:=os.Args[2]
+	dest_dir:=os.Args[3]
 	file_id, err := strconv.Atoi(file_id_str)
 	checkError(err)
-	processDemoFile(dem_path,file_id)
+	processDemoFile(dem_path,file_id,dest_dir)
 }
 
 
