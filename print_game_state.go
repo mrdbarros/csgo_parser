@@ -12,6 +12,16 @@ import (
 )
 
 var current_state=""
+var game_reset = false
+var game_started = false
+type player_pos struct {
+	x_pos int
+	y_pos int
+	z_pos int
+}
+
+
+
 
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
@@ -34,6 +44,7 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	header, err := p.ParseHeader()
 	checkError(err)
 	fmt.Println("Map:", header.MapName)
+	map_name:=header.MapName
 	dir_name:=dest_dir+"/"+header.MapName
 	dir_exists,_:=exists(dir_name)
 	if !dir_exists{
@@ -49,11 +60,13 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	
 	
 	p.RegisterEventHandler(func(e events.Kill) {
-		killer_team := e.Killer.Team
-		if killer_team == 2 {
-			current_state+="t_kill "
-		} else if killer_team == 3 {
-			current_state+="ct_kill "
+		if !(e.Killer == nil) {
+			killer_team := e.Killer.Team
+			if killer_team == 2 {
+				current_state+="t_kill "
+			} else if killer_team == 3 {
+				current_state+="ct_kill "
+			}
 		}
 	})
 	
@@ -69,33 +82,64 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 		}
 	})
 	
-	p.RegisterEventHandler(func(e events.ItemEquip) {
+	p.RegisterEventHandler(func(e events.ItemPickup) {
 		
 		if !(e.Player == nil){
 			team_equip := e.Player.Team
+			team_name := ""
 			if team_equip == 2 {
-				current_state+="t_equip "
+				team_name="t_"
 			} else if team_equip == 3 {
-				current_state+="ct_equip "
+				team_name="ct_"
 			}
-			weapon_equipped := strings.ReplaceAll(e.WeaponPtr.Weapon.String()," ","_")
+			weapon_equipped := strings.ReplaceAll(e.Weapon.Weapon.String()," ","_")
 			weapon_equipped=strings.ReplaceAll(weapon_equipped,"-","_")
 			weapon_equipped=strings.ToLower(weapon_equipped)+" "
-			current_state+=weapon_equipped
+			current_state+=team_name+weapon_equipped
 		}
 		
 	})
 	
 	p.RegisterEventHandler(func(e events.RoundStart) {
-		current_state+="round_start "
+		gs:= p.GameState()
+		if !(gs == nil) {
+			if gs.TeamCounterTerrorists().Score == 0 && gs.TeamTerrorists().Score == 0 && !game_started {
+				current_state= map_name + " "
+				game_reset=true
+			} else if gs.TeamCounterTerrorists().Score == 0 && gs.TeamTerrorists().Score == 0 {
+				current_state+= "match_end "
+			}
+			if gs.TeamCounterTerrorists().Score+gs.TeamTerrorists().Score > 10 && game_reset {
+				game_started=true
+			}
+		}
+		current_state+="round_start ct_"+strconv.Itoa(gs.TeamCounterTerrorists().Score) + " t_" + strconv.Itoa(gs.TeamTerrorists().Score) + " " 
 	})
 	
-	p.RegisterEventHandler(func(e events.PlayerSpottersChanged) {
-		if !(e.Spotted == nil){
-			processSpotEvent(e.Spotted)
-		}
+//	p.RegisterEventHandler(func(e events.PlayerSpottersChanged) {
+//		if !(e.Spotted == nil){
+//			processSpotEvent(e.Spotted)
+//		}
 		
-	})
+//	})
+	
+//	p.RegisterEventHandler(func(e events.ScoreUpdated) {
+//		if !(e.TeamState == nil){
+//			if e.NewScore == 0 && e.TeamState.Opponent.Score == 0 {
+//				current_state=map_name + " "
+//			}
+//		}
+//		
+//	})
+
+
+	//p.RegisterEventHandler(func(e events.FrameDone) {
+	//	gs := p.GameState()
+	//	if !(gs == nil){
+	//		processFrameEnd(gs)
+	//	}
+		
+	//})
 	
 	
 	p.RegisterEventHandler(func(e events.RoundEndOfficial) {
@@ -113,11 +157,28 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	
 	err = p.ParseToEnd()
 	checkError(err)
-
+	if current_state[0:3]!="de_" {
+		current_state = map_name + " " + current_state
+	}
 	_, err = file_write.WriteString(current_state)
 	checkError(err)
 	// Parse to end
 }
+
+//func processFrameEnd(gs *IGameState){
+//	tr := gs.TeamTerrorists()
+//	ct := gs.TeamCounterTerrorists()
+//	processPlayerPositions(tr,ct)
+//}
+
+//func processPlayerPositions(tr *common.TeamState, ct *common.TeamState){
+//	tr_members = tr.Members()
+//	ct_members = ct.Members()
+//	var playerId = 1
+//	for _, tr_player := range tr_members {
+//		switch playerId
+//	}
+//}
 
 func processSpotEvent(player *common.Player){
 	if !(player.TeamState == nil){
