@@ -5,23 +5,25 @@ import (
 	"os"
 	"strconv"
 	dem "github.com/markus-wa/demoinfocs-golang"
+	r3 "github.com/golang/geo/r3"
 	//ex "github.com/markus-wa/demoinfocs-golang/examples"
 	events "github.com/markus-wa/demoinfocs-golang/events"
 	common "github.com/markus-wa/demoinfocs-golang/common"
 	"strings"
+//	"time"
 )
 
 var current_state=""
 var game_reset = false
 var game_started = false
-type player_pos struct {
-	x_pos int
-	y_pos int
-	z_pos int
-}
-
-
-
+var discretize_factor = 20.0
+var tr_pos = make(map[int]r3.Vector)
+var ct_pos = make(map[int]r3.Vector)
+var round_start_time int
+var last_update =0
+var last_time_event =0
+var tick_rate=0
+var pos_update_interval=2
 
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
@@ -33,7 +35,30 @@ func exists(path string) (bool, error) {
 func processDemoFile(demPath string,file_id int,dest_dir string){
 	f, err := os.Open(demPath)
 	checkError(err)
-	
+	var ct_1_pos r3.Vector
+	var ct_2_pos r3.Vector
+	var ct_3_pos r3.Vector
+	var ct_4_pos r3.Vector
+	var ct_5_pos r3.Vector
+	ct_pos = map[int]r3.Vector{
+		1: ct_1_pos,
+		2: ct_2_pos,
+		3: ct_3_pos,
+		4: ct_4_pos,
+		5: ct_5_pos,
+	}
+	var tr_1_pos r3.Vector
+	var tr_2_pos r3.Vector
+	var tr_3_pos r3.Vector
+	var tr_4_pos r3.Vector
+	var tr_5_pos r3.Vector
+	tr_pos = map[int]r3.Vector{
+		1: tr_1_pos,
+		2: tr_2_pos,
+		3: tr_3_pos,
+		4: tr_4_pos,
+		5: tr_5_pos,
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Erro no processamento do arquivo!", r)
@@ -113,7 +138,9 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 				game_started=true
 			}
 		}
-		current_state+="round_start ct_"+strconv.Itoa(gs.TeamCounterTerrorists().Score) + " t_" + strconv.Itoa(gs.TeamTerrorists().Score) + " " 
+		new_score:="ct_"+strconv.Itoa(gs.TeamCounterTerrorists().Score) + " t_" + strconv.Itoa(gs.TeamTerrorists().Score) + " " 
+		//print(new_score)
+		current_state+="round_start "+new_score
 	})
 	
 //	p.RegisterEventHandler(func(e events.PlayerSpottersChanged) {
@@ -133,14 +160,20 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 //	})
 
 
-	//p.RegisterEventHandler(func(e events.FrameDone) {
-	//	gs := p.GameState()
-	//	if !(gs == nil){
-	//		processFrameEnd(gs)
-	//	}
+	p.RegisterEventHandler(func(e events.FrameDone) {
+		gs := p.GameState()
+		if !(gs == nil){
+			processFrameEnd(gs,p)
+		}
 		
-	//})
+	})
 	
+	p.RegisterEventHandler(func(e events.SmokeStart) {
+		ge := e.GrenadeEvent
+		pos := ge.Position
+		discrete_pos := discretizePos(pos)
+		current_state+="smoke_start "+formatPosForPrint(discrete_pos)
+	})
 	
 	p.RegisterEventHandler(func(e events.RoundEndOfficial) {
 
@@ -155,6 +188,11 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 		current_state+="bomb_plant_begin "
 	})
 	
+	p.RegisterEventHandler(func(e events.RoundFreezetimeEnd) {
+		round_start_time = p.CurrentFrame()/tick_rate
+		current_state+="freeze_time_end "
+	})
+	
 	err = p.ParseToEnd()
 	checkError(err)
 	if current_state[0:3]!="de_" {
@@ -165,21 +203,65 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	// Parse to end
 }
 
-//func processFrameEnd(gs *IGameState){
-//	tr := gs.TeamTerrorists()
-//	ct := gs.TeamCounterTerrorists()
-//	processPlayerPositions(tr,ct)
-//}
+func processFrameEnd(gs dem.IGameState,p dem.IParser){
+	//print(p.Header().PlaybackFrames)
+	if getRoundTime(p)%pos_update_interval == 0 && getCurrentTime(p)!=last_update {
+		last_update = getCurrentTime(p)
+		tr := gs.TeamTerrorists()
+		ct := gs.TeamCounterTerrorists()
+		processPlayerPositions(tr,ct)
+	}
+	if getRoundTime(p)%(pos_update_interval*2) == 0 && getRoundTime(p)!=last_time_event {
+		last_time_event = getRoundTime(p)
+		current_state+="time_event_"+strconv.Itoa(last_time_event)+" "
+	}
+}
 
-//func processPlayerPositions(tr *common.TeamState, ct *common.TeamState){
-//	tr_members = tr.Members()
-//	ct_members = ct.Members()
-//	var playerId = 1
-//	for _, tr_player := range tr_members {
-//		switch playerId
-//	}
-//}
+func getRoundTime(p dem.IParser)(int){
+	return int(getCurrentTime(p)-round_start_time)
+}
 
+func getCurrentTime(p dem.IParser)(int){
+	return p.CurrentFrame()/tick_rate
+}
+
+func processPlayerPositions(tr *common.TeamState, ct *common.TeamState){
+	updateDiscretePositions(tr)
+	updateDiscretePositions(ct)
+}
+
+func formatPosForPrint(pos r3.Vector)(string){
+	print_pos := discretizePos(pos)
+	return "x_coor "+strconv.Itoa(int(print_pos.X))+" y_coor "+strconv.Itoa(int(print_pos.Y))+" z_coor "+strconv.Itoa(int(print_pos.Z))+" "
+
+}
+
+func updateDiscretePositions(team *common.TeamState){
+	playerId:=1
+	for _, player := range team.Members() {
+		if team.Team() == 2 {
+			if !discretizePos(tr_pos[playerId]).ApproxEqual(discretizePos(player.Position)) {
+				tr_pos[playerId]=player.Position
+				current_state+="tr_" + strconv.Itoa(playerId)+ "_pos "+formatPosForPrint(player.Position)
+			}
+		} else if team.Team() == 3 {
+			if !discretizePos(ct_pos[playerId]).ApproxEqual(discretizePos(player.Position)) {
+				ct_pos[playerId]=player.Position
+				current_state+="ct_"+strconv.Itoa(playerId)+"_pos "+formatPosForPrint(player.Position)
+			}
+		}
+		playerId+=1
+	}
+}
+
+
+func discretizePos(pos r3.Vector)(disc_pos_ret r3.Vector){
+	var disc_pos r3.Vector
+	disc_pos.X = pos.X/discretize_factor
+	disc_pos.Y = pos.Y/discretize_factor
+	disc_pos.Z = pos.Z/discretize_factor
+	return disc_pos
+}
 func processSpotEvent(player *common.Player){
 	if !(player.TeamState == nil){
 	
@@ -205,6 +287,8 @@ func main() {
 	dest_dir:=os.Args[3]
 	file_id, err := strconv.Atoi(file_id_str)
 	checkError(err)
+	tick_rate,err=strconv.Atoi(os.Args[4])
+	checkError(err)	
 	processDemoFile(dem_path,file_id,dest_dir)
 }
 
