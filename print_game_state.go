@@ -17,14 +17,18 @@ var current_state=""
 var game_reset = false
 var game_started = false
 var discretize_factor = 20.0
-var tr_pos = make(map[int]r3.Vector)
-var ct_pos = make(map[int]r3.Vector)
 var round_start_time int
 var last_update =0
 var last_time_event =0
 var tick_rate=0
 var pos_update_interval=2
-
+	
+type player_mapping struct {
+	player_seq_id int
+	position  r3.Vector
+}
+var tr_map = make(map[int]player_mapping)
+var ct_map = make(map[int]player_mapping)
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
@@ -35,30 +39,6 @@ func exists(path string) (bool, error) {
 func processDemoFile(demPath string,file_id int,dest_dir string){
 	f, err := os.Open(demPath)
 	checkError(err)
-	var ct_1_pos r3.Vector
-	var ct_2_pos r3.Vector
-	var ct_3_pos r3.Vector
-	var ct_4_pos r3.Vector
-	var ct_5_pos r3.Vector
-	ct_pos = map[int]r3.Vector{
-		1: ct_1_pos,
-		2: ct_2_pos,
-		3: ct_3_pos,
-		4: ct_4_pos,
-		5: ct_5_pos,
-	}
-	var tr_1_pos r3.Vector
-	var tr_2_pos r3.Vector
-	var tr_3_pos r3.Vector
-	var tr_4_pos r3.Vector
-	var tr_5_pos r3.Vector
-	tr_pos = map[int]r3.Vector{
-		1: tr_1_pos,
-		2: tr_2_pos,
-		3: tr_3_pos,
-		4: tr_4_pos,
-		5: tr_5_pos,
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Erro no processamento do arquivo!", r)
@@ -87,11 +67,14 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	p.RegisterEventHandler(func(e events.Kill) {
 		if !(e.Killer == nil) {
 			killer_team := e.Killer.Team
+			killer_id:= getPlayerIdForPrint(e.Killer)
+			victim_id:= getPlayerIdForPrint(e.Victim)
 			if killer_team == 2 {
-				current_state+="t_kill "
+				current_state+="t_kill "+killer_id+victim_id
 			} else if killer_team == 3 {
-				current_state+="ct_kill "
+				current_state+="ct_kill "+killer_id+victim_id
 			}
+
 		}
 	})
 	
@@ -113,14 +96,16 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 			team_equip := e.Player.Team
 			team_name := ""
 			if team_equip == 2 {
-				team_name="t_"
+				team_name="t_pickup "
 			} else if team_equip == 3 {
-				team_name="ct_"
+				team_name="ct_pickup "
 			}
+			user_id:=getPlayerIdForPrint(e.Player)
+
 			weapon_equipped := strings.ReplaceAll(e.Weapon.Weapon.String()," ","_")
 			weapon_equipped=strings.ReplaceAll(weapon_equipped,"-","_")
 			weapon_equipped=strings.ToLower(weapon_equipped)+" "
-			current_state+=team_name+weapon_equipped
+			current_state+=team_name+user_id+weapon_equipped
 		}
 		
 	})
@@ -140,6 +125,7 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 		}
 		new_score:="ct_"+strconv.Itoa(gs.TeamCounterTerrorists().Score) + " t_" + strconv.Itoa(gs.TeamTerrorists().Score) + " " 
 		//print(new_score)
+		round_start_time = getCurrentTime(p)
 		current_state+="round_start "+new_score
 	})
 	
@@ -172,24 +158,52 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 		ge := e.GrenadeEvent
 		pos := ge.Position
 		discrete_pos := discretizePos(pos)
-		current_state+="smoke_start "+formatPosForPrint(discrete_pos)
+		thrower:=getPlayerIdForPrint(e.GrenadeEvent.Thrower)
+		current_state+="smoke_start "+thrower+formatPosForPrint(discrete_pos)
 	})
-	
+
+	p.RegisterEventHandler(func(e events.FlashExplode) {
+		ge := e.GrenadeEvent
+		pos := ge.Position
+		discrete_pos := discretizePos(pos)
+		thrower:=getPlayerIdForPrint(e.GrenadeEvent.Thrower)
+		current_state+="flash "+thrower+formatPosForPrint(discrete_pos)
+	})
+
 	p.RegisterEventHandler(func(e events.RoundEndOfficial) {
 
 		current_state+="round_end_official "
+	})
+	p.RegisterEventHandler(func(e events.InfernoStart) {
+
+		ge := e.Inferno
+		if !(ge.Owner() == nil) {
+			pos := ge.ConvexHull3D().Vertices[0]
+			discrete_pos := discretizePos(pos)
+			thrower:=getPlayerIdForPrint(ge.Owner())
+			current_state+="inferno_start "+thrower+formatPosForPrint(discrete_pos)
+		}
 	})
 	p.RegisterEventHandler(func(e events.BombPlanted) {
 
 		current_state+="bomb_planted "
 	})
+	
+	p.RegisterEventHandler(func(e events.PlayerHurt) {
+		if !(e.Attacker==nil){
+			attacker:=getPlayerIdForPrint(e.Attacker)
+			victim:=getPlayerIdForPrint(e.Player)
+			damage:="damage_"+strconv.Itoa((e.HealthDamage/5)*5)
+			current_state+=damage + " " + attacker + " " + victim
+		}
+	})
+
 	p.RegisterEventHandler(func(e events.BombPlantBegin) {
 
 		current_state+="bomb_plant_begin "
 	})
 	
 	p.RegisterEventHandler(func(e events.RoundFreezetimeEnd) {
-		round_start_time = p.CurrentFrame()/tick_rate
 		current_state+="freeze_time_end "
 	})
 	
@@ -203,13 +217,35 @@ func processDemoFile(demPath string,file_id int,dest_dir string){
 	// Parse to end
 }
 
+func getSeqId(player *common.Player)(int){
+	if player.Team == 2 {
+		return tr_map[player.UserID].player_seq_id
+	} else if player.Team==3 {
+		return ct_map[player.UserID].player_seq_id
+	}
+	return 0
+}
+
+func getPlayerIdForPrint(player *common.Player)(string){
+	team_prefix:=getTeamPrefixFromPlayer(player)
+	return team_prefix+"id_"+strconv.Itoa(getSeqId(player)) + " "
+}
+
+func getTeamPrefixFromPlayer(player *common.Player)(string){
+	team_prefix:=""
+	if player.Team == 2 {
+		team_prefix="tr_"
+	} else if player.Team==3{
+		team_prefix="ct_"
+	}
+	return team_prefix
+}
+
 func processFrameEnd(gs dem.IGameState,p dem.IParser){
 	//print(p.Header().PlaybackFrames)
 	if getRoundTime(p)%pos_update_interval == 0 && getCurrentTime(p)!=last_update {
 		last_update = getCurrentTime(p)
-		tr := gs.TeamTerrorists()
-		ct := gs.TeamCounterTerrorists()
-		processPlayerPositions(tr,ct)
+		processPlayerPositions(p)
 	}
 	if getRoundTime(p)%(pos_update_interval*2) == 0 && getRoundTime(p)!=last_time_event {
 		last_time_event = getRoundTime(p)
@@ -225,9 +261,12 @@ func getCurrentTime(p dem.IParser)(int){
 	return p.CurrentFrame()/tick_rate
 }
 
-func processPlayerPositions(tr *common.TeamState, ct *common.TeamState){
-	updateDiscretePositions(tr)
-	updateDiscretePositions(ct)
+func processPlayerPositions(p dem.IParser){
+	gs:=p.GameState()
+	tr:=gs.TeamTerrorists()
+	ct:=gs.TeamCounterTerrorists()
+	updateDiscretePositions(tr,p)
+	updateDiscretePositions(ct,p)
 }
 
 func formatPosForPrint(pos r3.Vector)(string){
@@ -236,24 +275,49 @@ func formatPosForPrint(pos r3.Vector)(string){
 
 }
 
-func updateDiscretePositions(team *common.TeamState){
-	playerId:=1
+func updateDiscretePositions(team *common.TeamState,p dem.IParser){
 	for _, player := range team.Members() {
+		playerId:=player.UserID
+		var new_player_mapping player_mapping
+		new_player_mapping.position = player.Position
 		if team.Team() == 2 {
-			if !discretizePos(tr_pos[playerId]).ApproxEqual(discretizePos(player.Position)) {
-				tr_pos[playerId]=player.Position
-				current_state+="tr_" + strconv.Itoa(playerId)+ "_pos "+formatPosForPrint(player.Position)
+			if _, ok := tr_map[playerId]; !ok {
+				remakePlayerMappings(p.GameState())
+			}
+			new_player_mapping.player_seq_id = tr_map[playerId].player_seq_id
+			if !discretizePos(tr_map[playerId].position).ApproxEqual(discretizePos(player.Position)) {
+				
+				tr_map[playerId]=new_player_mapping
+				current_state+="tr_" + strconv.Itoa(tr_map[playerId].player_seq_id)+ "_pos "+formatPosForPrint(player.Position)
 			}
 		} else if team.Team() == 3 {
-			if !discretizePos(ct_pos[playerId]).ApproxEqual(discretizePos(player.Position)) {
-				ct_pos[playerId]=player.Position
-				current_state+="ct_"+strconv.Itoa(playerId)+"_pos "+formatPosForPrint(player.Position)
+			if _, ok := ct_map[playerId]; !ok {
+				remakePlayerMappings(p.GameState())
+			}
+			new_player_mapping.player_seq_id = ct_map[playerId].player_seq_id
+			if !discretizePos(ct_map[playerId].position).ApproxEqual(discretizePos(player.Position)) {
+				ct_map[playerId]=new_player_mapping
+				current_state+="ct_" + strconv.Itoa(ct_map[playerId].player_seq_id)+"_pos "+formatPosForPrint(player.Position)
 			}
 		}
-		playerId+=1
 	}
 }
 
+func remakePlayerMappings(gs dem.IGameState){
+	ct_map = make(map[int]player_mapping)
+	seq_id:=1
+	for _,player := range gs.TeamCounterTerrorists().Members(){
+		ct_map[player.UserID]=player_mapping{player_seq_id:seq_id, position: player.Position}
+		seq_id+=1
+	}
+	seq_id=1
+	tr_map = make(map[int]player_mapping)
+	for _,player := range gs.TeamTerrorists().Members(){
+		tr_map[player.UserID]=player_mapping{player_seq_id:seq_id, position: player.Position}
+		seq_id+=1
+		
+	}
+}
 
 func discretizePos(pos r3.Vector)(disc_pos_ret r3.Vector){
 	var disc_pos r3.Vector
