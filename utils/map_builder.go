@@ -1,4 +1,4 @@
-package utils
+package main
 
 import (
 	"image"
@@ -16,7 +16,7 @@ func getMapsToImageMap() map[string]string {
 		"de_vertigo":  "de_vertigo",
 		"de_overpass": "de_overpass",
 		"de_cache":    "de_cache",
-		"de_train":    "de_train",
+		"de_train":    "/home/marcel/projetos/data/csgo_analyze/images/maps/de_train.jpg",
 	}
 }
 
@@ -26,12 +26,12 @@ func getIconNameToImageMap() map[string]string {
 		"smoke":        "smoke",
 		"flash":        "flash",
 		"molotov":      "molotov",
-		"terrorist_1":  "terrorist_1",
+		"terrorist_1":  "/home/marcel/projetos/data/csgo_analyze/images/icons/t.jpg",
 		"terrorist_2":  "terrorist_2",
 		"terrorist_3":  "terrorist_3",
 		"terrorist_4":  "terrorist_4",
 		"terrorist_5":  "terrorist_5",
-		"ct_1":         "ct_1",
+		"ct_1":         "/home/marcel/projetos/data/csgo_analyze/images/icons/ct.jpg",
 		"ct_2":         "ct_2",
 		"ct_3":         "ct_3",
 		"ct_4":         "ct_4",
@@ -61,18 +61,20 @@ func checkError(err error) {
 	}
 }
 
-func iconImageGetter(iconNameToPathMap map[string]string) func(Icon) *(image.RGBA) {
-	loadedImages := make(map[string]*(image.RGBA))
+func iconImageGetter(iconNameToPathMap map[string]string) func(Icon) *(image.Image) {
+	loadedImages := make(map[string]*(image.Image))
 	iconNameToPathMapInner := iconNameToPathMap
-	return func(icon Icon) *image.RGBA {
-		if iconImg, ok := loadedImages[icon.iconName]; ok {
-			return iconImg
-		} else {
+	return func(icon Icon) *image.Image {
+		iconImg, ok := loadedImages[icon.iconName]
+		if !ok {
 			fIcon, err := os.Open(iconNameToPathMapInner[icon.iconName])
 			checkError(err)
-			newIcon, _, err := image.Decode(fIcon)
+			newImg, _, err := image.Decode(fIcon)
 			checkError(err)
+			loadedImages[icon.iconName] = &newImg
+			iconImg = loadedImages[icon.iconName]
 		}
+		return iconImg
 	}
 }
 
@@ -93,8 +95,10 @@ func DrawMap(annMap AnnotatedMap) *(image.RGBA) {
 	draw.Draw(img, imgMap.Bounds(), imgMap, image.ZP, draw.Over)
 	iconGetter := iconImageGetter(iconNameToPath)
 	for _, icon := range annMap.iconsList {
-		iconImg := iconGetter(icon)
-		draw.Draw(img, iconImg.Bounds(), iconImg, image.ZP, draw.Over)
+		offset := image.Pt(icon.x, icon.y)
+		iconImg := *iconGetter(icon)
+		draw.Draw(img, iconImg.Bounds().Add(offset), iconImg, image.ZP, draw.Over)
 	}
+
 	return img
 }
