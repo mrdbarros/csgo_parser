@@ -6,13 +6,12 @@ import (
 	"strconv"
 
 	r3 "github.com/golang/geo/r3"
+	"github.com/markus-wa/demoinfocs-golang/common"
+	"github.com/markus-wa/demoinfocs-golang/events"
 	dem "github.com/markus-wa/demoinfocs-golang/pkg/demoinfocs"
 
 	//ex "github.com/markus-wa/demoinfocs-golang/examples"
 	"strings"
-
-	common "github.com/markus-wa/demoinfocs-golang/pkg/demoinfocs/common"
-	events "github.com/markus-wa/demoinfocs-golang/pkg/demoinfocs/events"
 	//	"time"
 )
 
