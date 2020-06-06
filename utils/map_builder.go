@@ -42,14 +42,14 @@ func getIconNameToImageMap() map[string]string {
 	}
 }
 
-//Single icon
+//Icon represents a single icon and its position
 type Icon struct {
 	x        int
 	y        int
 	iconName string
 }
 
-//map with iconlist
+//AnnotatedMap is a mapName with iconlist
 type AnnotatedMap struct {
 	iconsList []Icon
 	sourceMap string
@@ -78,7 +78,7 @@ func iconImageGetter(iconNameToPathMap map[string]string) func(Icon) *(image.Ima
 	}
 }
 
-//uses annotatedMap struct to generate a full image
+//DrawMap uses annotatedMap struct to generate a full image
 func DrawMap(annMap AnnotatedMap) *(image.RGBA) {
 
 	mapPath := getMapsToImageMap()[annMap.sourceMap]

@@ -10,23 +10,23 @@ import (
 	events "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/events"
 )
 
-var current_state = ""
-var game_reset = false
-var game_started = false
-var discretize_factor = 20.0
-var round_start_time int
-var last_update = 0
-var last_time_event = 0
-var tick_rate = 0
-var pos_update_interval = 2
+var currentState = ""
+var gameReset = false
+var gameStarted = false
+var discretizeFactor = 20.0
+var roundStartTime int
+var lastUpdate = 0
+var lastTimeEvent = 0
+var tickRate = 0
+var posUpdateInterval = 2
 
-type player_mapping struct {
-	player_seq_id int
-	position      r3.Vector
+type playerMapping struct {
+	playerSeqID int
+	position    r3.Vector
 }
 
-var tr_map = make(map[int]player_mapping)
-var ct_map = make(map[int]player_mapping)
+var trMap = make(map[int]playerMapping)
+var ctMap = make(map[int]playerMapping)
 
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
@@ -47,7 +47,7 @@ func checkError(err error) {
 	}
 }
 
-func processDemoFile(demPath string, file_id int, dest_dir string) {
+func processDemoFile(demPath string, fileID int, destDir string) {
 	f, err := os.Open(demPath)
 	checkError(err)
 	defer func() {
@@ -60,18 +60,18 @@ func processDemoFile(demPath string, file_id int, dest_dir string) {
 	header, err := p.ParseHeader()
 	checkError(err)
 	fmt.Println("Map:", header.MapName)
-	map_name := header.MapName
-	dir_name := dest_dir + "/" + header.MapName
-	dir_exists, _ := exists(dir_name)
-	if !dir_exists {
-		err = os.Mkdir(dir_name, 0700)
+	mapName := header.MapName
+	dirName := destDir + "/" + header.MapName
+	dirExists, _ := exists(dirName)
+	if !dirExists {
+		err = os.Mkdir(dirName, 0700)
 		checkError(err)
 	}
-	new_file := dir_name + "/" + header.MapName + "_" + strconv.Itoa(file_id) + ".txt"
-	file_write, err := os.Create(new_file)
+	newFile := dirName + "/" + header.MapName + "_" + strconv.Itoa(fileID) + ".txt"
+	fileWrite, err := os.Create(newFile)
 	checkError(err)
 
-	defer file_write.Close()
+	defer fileWrite.Close()
 
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
@@ -83,39 +83,39 @@ func processDemoFile(demPath string, file_id int, dest_dir string) {
 
 	err = p.ParseToEnd()
 	checkError(err)
-	if current_state[0:3] != "de_" {
-		current_state = map_name + " " + current_state
+	if currentState[0:3] != "de_" {
+		currentState = mapName + " " + currentState
 	}
-	_, err = file_write.WriteString(current_state)
+	_, err = fileWrite.WriteString(currentState)
 	checkError(err)
 	// Parse to end
 }
 
 func main() {
-	dem_path := os.Args[1]
-	file_id_str := os.Args[2]
-	dest_dir := os.Args[3]
-	file_id, err := strconv.Atoi(file_id_str)
+	demPath := os.Args[1]
+	fileIDStr := os.Args[2]
+	destDir := os.Args[3]
+	fileID, err := strconv.Atoi(fileIDStr)
 	checkError(err)
-	tick_rate, err = strconv.Atoi(os.Args[4])
+	tickRate, err = strconv.Atoi(os.Args[4])
 	checkError(err)
-	processDemoFile(dem_path, file_id, dest_dir)
+	processDemoFile(demPath, fileID, destDir)
 }
 
 func processFrameEnd(gs dem.GameState, p dem.Parser) {
 	//print(p.Header().PlaybackFrames)
-	if getRoundTime(p)%pos_update_interval == 0 && getCurrentTime(p) != last_update {
-		last_update = getCurrentTime(p)
+	if getRoundTime(p)%posUpdateInterval == 0 && getCurrentTime(p) != lastUpdate {
+		lastUpdate = getCurrentTime(p)
 		processPlayerPositions(p)
 	}
 }
 
 func getRoundTime(p dem.Parser) int {
-	return int(getCurrentTime(p) - round_start_time)
+	return int(getCurrentTime(p) - roundStartTime)
 }
 
 func getCurrentTime(p dem.Parser) int {
-	return p.CurrentFrame() / tick_rate
+	return p.CurrentFrame() / tickRate
 }
 
 func processPlayerPositions(p dem.Parser) {
