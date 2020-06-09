@@ -2,12 +2,18 @@ package main
 
 import (
 	"fmt"
+	"image/jpeg"
+	"io/ioutil"
+	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	r3 "github.com/golang/geo/r3"
 	dem "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs"
 	events "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/events"
+	metadata "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/metadata"
+	utils "github.com/mrdbarros/csgo_analyze/utils"
 )
 
 var currentState = ""
@@ -47,6 +53,25 @@ func checkError(err error) {
 	}
 }
 
+func RemoveContents(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	names, err := d.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		err = os.RemoveAll(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func processDemoFile(demPath string, fileID int, destDir string) {
 	f, err := os.Open(demPath)
 	checkError(err)
@@ -61,26 +86,74 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	checkError(err)
 	fmt.Println("Map:", header.MapName)
 	mapName := header.MapName
-	dirName := destDir + "/" + header.MapName
+	dirName := destDir + "/" + header.MapName + "/" + strconv.Itoa(fileID)
 	dirExists, _ := exists(dirName)
 	if !dirExists {
-		err = os.Mkdir(dirName, 0700)
+		err = os.MkdirAll(dirName, 0700)
 		checkError(err)
 	}
+
+	checkError(err)
 	newFile := dirName + "/" + header.MapName + "_" + strconv.Itoa(fileID) + ".txt"
 	fileWrite, err := os.Create(newFile)
 	checkError(err)
 
 	defer fileWrite.Close()
-
+	gameReset := false
+	gameStarted := false
+	winTeamCurrentRound := "_t"
+	roundDir := dirName
+	fullMap := utils.AnnotatedMap{IconsList: nil, SourceMap: header.MapName}
+	mapMetadata := metadata.MapNameToMap[header.MapName]
+	imageIndex := 0
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
 		if !(gs == nil) {
-			processFrameEnd(gs, p)
+			processFrameEnd(gs, p, &fullMap, mapMetadata, &imageIndex, roundDir)
 		}
 
 	})
 
+	p.RegisterEventHandler(func(e events.RoundStart) {
+		gs := p.GameState()
+		if !(gs == nil) {
+			if gs.TeamCounterTerrorists().Score() == 0 && gs.TeamTerrorists().Score() == 0 && !gameStarted {
+				gameReset = true
+			}
+			if gs.TeamCounterTerrorists().Score()+gs.TeamTerrorists().Score() > 10 && gameReset {
+				gameStarted = true
+			}
+		}
+		newScore := "ct_" + strconv.Itoa(gs.TeamCounterTerrorists().Score()) +
+			" t_" + strconv.Itoa(gs.TeamTerrorists().Score())
+		roundDir = dirName + "/" + newScore
+		dirExists, _ := exists(roundDir)
+		imageIndex = 0
+		if !dirExists {
+			err = os.MkdirAll(roundDir, 0700)
+			checkError(err)
+		} else {
+			RemoveContents(roundDir)
+		}
+		roundStartTime = getCurrentTime(p)
+	})
+
+	p.RegisterEventHandler(func(e events.RoundEnd) {
+
+		win_team := e.Winner
+		if win_team == 2 {
+			winTeamCurrentRound += "_t"
+		} else if win_team == 3 {
+			winTeamCurrentRound += "_ct"
+		} else {
+			winTeamCurrentRound += "_invalid"
+		}
+	})
+
+	p.RegisterEventHandler(func(e events.RoundEndOfficial) {
+		//rename round folder with winner team
+		os.Rename(roundDir, roundDir+winTeamCurrentRound)
+	})
 	err = p.ParseToEnd()
 	checkError(err)
 	if currentState[0:3] != "de_" {
@@ -99,14 +172,23 @@ func main() {
 	checkError(err)
 	tickRate, err = strconv.Atoi(os.Args[4])
 	checkError(err)
-	processDemoFile(demPath, fileID, destDir)
+	files, err := ioutil.ReadDir(demPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, f := range files {
+		processDemoFile(demPath+"/"+f.Name(), fileID, destDir)
+	}
+
 }
 
-func processFrameEnd(gs dem.GameState, p dem.Parser) {
-	//print(p.Header().PlaybackFrames)
+func processFrameEnd(gs dem.GameState, p dem.Parser,
+	fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, imageIndex *int, roundDir string) {
+
 	if getRoundTime(p)%posUpdateInterval == 0 && getCurrentTime(p) != lastUpdate {
 		lastUpdate = getCurrentTime(p)
-		processPlayerPositions(p)
+
+		processPlayerPositions(p, fullMap, mapMetadata, imageIndex, roundDir)
 	}
 }
 
@@ -118,10 +200,25 @@ func getCurrentTime(p dem.Parser) int {
 	return p.CurrentFrame() / tickRate
 }
 
-func processPlayerPositions(p dem.Parser) {
+func processPlayerPositions(p dem.Parser, fullMap *utils.AnnotatedMap,
+	mapMetadata metadata.Map, imageIndex *int, roundDir string) {
 	gs := p.GameState()
 	tr := gs.TeamTerrorists()
-	ct := gs.TeamCounterTerrorists()
-	fmt.Println(ct)
-	fmt.Println(tr)
+	//ct := gs.TeamCounterTerrorists()
+	(*fullMap).IconsList = nil
+	for _, t := range tr.Members() {
+
+		x, y := mapMetadata.TranslateScale(t.Position().X, t.Position().Y)
+		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "terrorist_1"}
+		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+	}
+	img := utils.DrawMap(*fullMap)
+	third, err := os.Create(roundDir + "/output_map" +
+		strconv.Itoa(*imageIndex) + ".jpg")
+	if err != nil {
+		log.Fatalf("failed to create: %s", err)
+	}
+	jpeg.Encode(third, img, &jpeg.Options{jpeg.DefaultQuality})
+	*imageIndex++
+	defer third.Close()
 }

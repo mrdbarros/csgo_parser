@@ -44,15 +44,15 @@ func getIconNameToImageMap() map[string]string {
 
 //Icon represents a single icon and its position
 type Icon struct {
-	x        int
-	y        int
-	iconName string
+	X        float64
+	Y        float64
+	IconName string
 }
 
 //AnnotatedMap is a mapName with iconlist
 type AnnotatedMap struct {
-	iconsList []Icon
-	sourceMap string
+	IconsList []Icon
+	SourceMap string
 }
 
 func checkError(err error) {
@@ -65,14 +65,14 @@ func iconImageGetter(iconNameToPathMap map[string]string) func(Icon) *(image.Ima
 	loadedImages := make(map[string]*(image.Image))
 	iconNameToPathMapInner := iconNameToPathMap
 	return func(icon Icon) *image.Image {
-		iconImg, ok := loadedImages[icon.iconName]
+		iconImg, ok := loadedImages[icon.IconName]
 		if !ok {
-			fIcon, err := os.Open(iconNameToPathMapInner[icon.iconName])
+			fIcon, err := os.Open(iconNameToPathMapInner[icon.IconName])
 			checkError(err)
 			newImg, _, err := image.Decode(fIcon)
 			checkError(err)
-			loadedImages[icon.iconName] = &newImg
-			iconImg = loadedImages[icon.iconName]
+			loadedImages[icon.IconName] = &newImg
+			iconImg = loadedImages[icon.IconName]
 		}
 		return iconImg
 	}
@@ -81,7 +81,7 @@ func iconImageGetter(iconNameToPathMap map[string]string) func(Icon) *(image.Ima
 //DrawMap uses annotatedMap struct to generate a full image
 func DrawMap(annMap AnnotatedMap) *(image.RGBA) {
 
-	mapPath := getMapsToImageMap()[annMap.sourceMap]
+	mapPath := getMapsToImageMap()[annMap.SourceMap]
 
 	iconNameToPath := getIconNameToImageMap()
 	// Load map overview image
@@ -94,8 +94,8 @@ func DrawMap(annMap AnnotatedMap) *(image.RGBA) {
 	img := image.NewRGBA(imgMap.Bounds())
 	draw.Draw(img, imgMap.Bounds(), imgMap, image.ZP, draw.Over)
 	iconGetter := iconImageGetter(iconNameToPath)
-	for _, icon := range annMap.iconsList {
-		offset := image.Pt(icon.x, icon.y)
+	for _, icon := range annMap.IconsList {
+		offset := image.Pt(int(icon.X), int(icon.Y))
 		iconImg := *iconGetter(icon)
 		draw.Draw(img, iconImg.Bounds().Add(offset), iconImg, image.ZP, draw.Over)
 	}

@@ -11,11 +11,11 @@ func DrawMapTest() {
 	if err != nil {
 		log.Fatalf("failed to create: %s", err)
 	}
-	tIcon := Icon{x: 200, y: 300, iconName: "terrorist_1"}
-	ctIcon := Icon{x: 100, y: 400, iconName: "ct_1"}
-	annMap := AnnotatedMap{iconsList: nil, sourceMap: "de_train"}
-	annMap.iconsList = append(annMap.iconsList, tIcon)
-	annMap.iconsList = append(annMap.iconsList, ctIcon)
+	tIcon := Icon{X: 200, Y: 300, IconName: "terrorist_1"}
+	ctIcon := Icon{X: 100, Y: 400, IconName: "ct_1"}
+	annMap := AnnotatedMap{IconsList: nil, SourceMap: "de_train"}
+	annMap.IconsList = append(annMap.IconsList, tIcon)
+	annMap.IconsList = append(annMap.IconsList, ctIcon)
 	img := DrawMap(annMap)
 	jpeg.Encode(third, img, &jpeg.Options{jpeg.DefaultQuality})
 	defer third.Close()
