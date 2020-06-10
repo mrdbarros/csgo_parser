@@ -9,13 +9,13 @@ import (
 //returns map from mapName to mapImagePath
 func getMapsToImageMap() map[string]string {
 	return map[string]string{
-		"de_dust2":    "de_dust2",
-		"de_inferno":  "de_inferno",
-		"de_nuke":     "de_nuke",
-		"de_mirage":   "de_mirage",
-		"de_vertigo":  "de_vertigo",
-		"de_overpass": "de_overpass",
-		"de_cache":    "de_cache",
+		"de_dust2":    "/home/marcel/projetos/data/csgo_analyze/images/maps/de_dust2.jpg",
+		"de_inferno":  "/home/marcel/projetos/data/csgo_analyze/images/maps/de_inferno.jpg",
+		"de_nuke":     "/home/marcel/projetos/data/csgo_analyze/images/maps/de_nuke.jpg",
+		"de_mirage":   "/home/marcel/projetos/data/csgo_analyze/images/maps/de_mirage.jpg",
+		"de_vertigo":  "/home/marcel/projetos/data/csgo_analyze/images/maps/de_vertigo.jpg",
+		"de_overpass": "/home/marcel/projetos/data/csgo_analyze/images/maps/de_overpass.jpg",
+		"de_cache":    "/home/marcel/projetos/data/csgo_analyze/images/maps/de_cache.jpg",
 		"de_train":    "/home/marcel/projetos/data/csgo_analyze/images/maps/de_train.jpg",
 	}
 }

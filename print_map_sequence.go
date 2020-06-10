@@ -93,7 +93,6 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 		checkError(err)
 	}
 
-	checkError(err)
 	newFile := dirName + "/" + header.MapName + "_" + strconv.Itoa(fileID) + ".txt"
 	fileWrite, err := os.Create(newFile)
 	checkError(err)
@@ -101,7 +100,7 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	defer fileWrite.Close()
 	gameReset := false
 	gameStarted := false
-	winTeamCurrentRound := "_t"
+	winTeamCurrentRound := "t"
 	roundDir := dirName
 	fullMap := utils.AnnotatedMap{IconsList: nil, SourceMap: header.MapName}
 	mapMetadata := metadata.MapNameToMap[header.MapName]
@@ -125,7 +124,7 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 			}
 		}
 		newScore := "ct_" + strconv.Itoa(gs.TeamCounterTerrorists().Score()) +
-			" t_" + strconv.Itoa(gs.TeamTerrorists().Score())
+			"_t_" + strconv.Itoa(gs.TeamTerrorists().Score())
 		roundDir = dirName + "/" + newScore
 		dirExists, _ := exists(roundDir)
 		imageIndex = 0
@@ -142,17 +141,24 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 
 		win_team := e.Winner
 		if win_team == 2 {
-			winTeamCurrentRound += "_t"
+			winTeamCurrentRound = "t"
 		} else if win_team == 3 {
-			winTeamCurrentRound += "_ct"
+			winTeamCurrentRound = "ct"
 		} else {
-			winTeamCurrentRound += "_invalid"
+			winTeamCurrentRound = "invalid"
 		}
 	})
 
 	p.RegisterEventHandler(func(e events.RoundEndOfficial) {
 		//rename round folder with winner team
-		os.Rename(roundDir, roundDir+winTeamCurrentRound)
+		if roundDir != dirName {
+			fileWrite, err := os.Create(roundDir + "/winner.txt")
+			checkError(err)
+			defer fileWrite.Close()
+			_, err = fileWrite.WriteString(winTeamCurrentRound)
+			checkError(err)
+		}
+
 	})
 	err = p.ParseToEnd()
 	checkError(err)
@@ -166,27 +172,27 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 
 func main() {
 	demPath := os.Args[1]
-	fileIDStr := os.Args[2]
-	destDir := os.Args[3]
-	fileID, err := strconv.Atoi(fileIDStr)
-	checkError(err)
-	tickRate, err = strconv.Atoi(os.Args[4])
-	checkError(err)
+	destDir := os.Args[2]
+
+	tickRate, _ = strconv.Atoi(os.Args[3])
+	fileID := 0
 	files, err := ioutil.ReadDir(demPath)
 	if err != nil {
 		log.Fatal(err)
 	}
 	for _, f := range files {
 		processDemoFile(demPath+"/"+f.Name(), fileID, destDir)
+		fileID++
 	}
 
 }
 
 func processFrameEnd(gs dem.GameState, p dem.Parser,
 	fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, imageIndex *int, roundDir string) {
-
-	if getRoundTime(p)%posUpdateInterval == 0 && getCurrentTime(p) != lastUpdate {
-		lastUpdate = getCurrentTime(p)
+	currentTime := getCurrentTime(p)
+	currentRoundTime := getRoundTime(p)
+	if currentRoundTime%posUpdateInterval == 0 && currentTime != lastUpdate {
+		lastUpdate = currentTime
 
 		processPlayerPositions(p, fullMap, mapMetadata, imageIndex, roundDir)
 	}

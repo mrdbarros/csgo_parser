@@ -12,8 +12,7 @@
       "program": "${fileDirname}",
       "env": {},
       "args": [
-        "/home/marcel/projetos/data/csgo_analyze/replays/g2-vs-faze-m2-train.dem",
-        1,
+        "/home/marcel/projetos/data/csgo_analyze/replays",
         "/home/marcel/projetos/data/csgo_analyze/processed",
         128
       ]
