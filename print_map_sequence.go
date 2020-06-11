@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"image/jpeg"
 	"io/ioutil"
@@ -9,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	r3 "github.com/golang/geo/r3"
 	dem "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs"
 	events "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/events"
 	metadata "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/metadata"
@@ -28,11 +28,11 @@ var posUpdateInterval = 2
 
 type playerMapping struct {
 	playerSeqID int
-	position    r3.Vector
+	health      []float32
 }
 
-var trMap = make(map[int]playerMapping)
-var ctMap = make(map[int]playerMapping)
+var trMap = make(map[int]*playerMapping)
+var ctMap = make(map[int]*playerMapping)
 
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
@@ -102,13 +102,14 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	gameStarted := false
 	winTeamCurrentRound := "t"
 	roundDir := dirName
+	snapshotCollectionSize := 0
 	fullMap := utils.AnnotatedMap{IconsList: nil, SourceMap: header.MapName}
 	mapMetadata := metadata.MapNameToMap[header.MapName]
 	imageIndex := 0
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
 		if !(gs == nil) && roundDir != dirName {
-			processFrameEnd(gs, p, &fullMap, mapMetadata, &imageIndex, roundDir)
+			processFrameEnd(gs, p, &fullMap, mapMetadata, &imageIndex, roundDir, &snapshotCollectionSize)
 		}
 
 	})
@@ -158,6 +159,9 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 			defer fileWrite.Close()
 			_, err = fileWrite.WriteString(winTeamCurrentRound)
 			checkError(err)
+
+			csvData := organizeTabularData(trMap, ctMap, snapshotCollectionSize)
+			writeToCSV(csvData, roundDir)
 		}
 
 	})
@@ -188,36 +192,68 @@ func main() {
 
 }
 
-func processPlayerHP(gs dem.GameState, fullMap *utils.AnnotatedMap) {
+func writeToCSV(data [][]string, filePath string) {
+	file, err := os.Create(filePath)
+	checkError(err)
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+
+	err = writer.WriteAll(data)
+	checkError(err)
+}
+
+func organizeTabularData(trMap map[int]*playerMapping,
+	ctMap map[int]*playerMapping, snapshotCollectionSize int) [][]string {
+
+	var csvData [][]string
+	var singleRow [10]string
+	for countSnapshot := 0; countSnapshot < snapshotCollectionSize; countSnapshot++ {
+		for _, playerData := range trMap {
+			singleRow[playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health[countSnapshot]), 'f', -1, 32)
+		}
+		for _, playerData := range ctMap {
+			singleRow[5+playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health[countSnapshot]), 'f', -1, 32)
+		}
+
+		csvData = append(csvData, singleRow[:])
+	}
+	return csvData
+}
+
+func processPlayerHP(gs dem.GameState, fullMap *utils.AnnotatedMap,
+	trMap map[int]*playerMapping, ctMap map[int]*playerMapping) {
 	tr := gs.TeamTerrorists()
 	ct := gs.TeamCounterTerrorists()
 	(*fullMap).IconsList = nil
 	//add t icons
 	for _, t := range tr.Members() {
-
+		trMap[t.UserID].health = append(trMap[t.UserID].health, float32(t.Health())/100)
 	}
 	//add ct icons
 	for _, ct := range ct.Members() {
-
+		ctMap[ct.UserID].health = append(ctMap[ct.UserID].health, float32(ct.Health())/100)
 	}
 }
 
 func processPlayerInformation(gs dem.GameState, fullMap *utils.AnnotatedMap,
-	mapMetadata metadata.Map) {
+	mapMetadata metadata.Map, trMap map[int]*playerMapping, ctMap map[int]*playerMapping) {
 
 	processPlayerPositions(gs, fullMap, mapMetadata)
+	processPlayerHP(gs, fullMap, trMap, ctMap)
 }
 
 func processFrameEnd(gs dem.GameState, p dem.Parser,
 	fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, imageIndex *int,
-	roundDir string) {
+	roundDir string, snapshotCollectionSize *int) {
 	currentTime := getCurrentTime(p)
 	currentRoundTime := getRoundTime(p)
 	if currentRoundTime%posUpdateInterval == 0 && currentTime != lastUpdate {
 		lastUpdate = currentTime
 
-		processPlayerInformation(gs, fullMap, mapMetadata)
+		processPlayerInformation(gs, fullMap, mapMetadata, trMap, ctMap)
 		generateMap(fullMap, roundDir, imageIndex)
+		*snapshotCollectionSize++
 	}
 }
 
