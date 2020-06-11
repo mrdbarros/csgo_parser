@@ -107,7 +107,7 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	imageIndex := 0
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
-		if !(gs == nil) {
+		if !(gs == nil) && roundDir != dirName {
 			processFrameEnd(gs, p, &fullMap, mapMetadata, &imageIndex, roundDir)
 		}
 
@@ -118,6 +118,7 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 		if !(gs == nil) {
 			if gs.TeamCounterTerrorists().Score() == 0 && gs.TeamTerrorists().Score() == 0 && !gameStarted {
 				gameReset = true
+				RemoveContents(dirName)
 			}
 			if gs.TeamCounterTerrorists().Score()+gs.TeamTerrorists().Score() > 10 && gameReset {
 				gameStarted = true
@@ -187,14 +188,36 @@ func main() {
 
 }
 
+func processPlayerHP(gs dem.GameState, fullMap *utils.AnnotatedMap) {
+	tr := gs.TeamTerrorists()
+	ct := gs.TeamCounterTerrorists()
+	(*fullMap).IconsList = nil
+	//add t icons
+	for _, t := range tr.Members() {
+
+	}
+	//add ct icons
+	for _, ct := range ct.Members() {
+
+	}
+}
+
+func processPlayerInformation(gs dem.GameState, fullMap *utils.AnnotatedMap,
+	mapMetadata metadata.Map) {
+
+	processPlayerPositions(gs, fullMap, mapMetadata)
+}
+
 func processFrameEnd(gs dem.GameState, p dem.Parser,
-	fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, imageIndex *int, roundDir string) {
+	fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, imageIndex *int,
+	roundDir string) {
 	currentTime := getCurrentTime(p)
 	currentRoundTime := getRoundTime(p)
 	if currentRoundTime%posUpdateInterval == 0 && currentTime != lastUpdate {
 		lastUpdate = currentTime
 
-		processPlayerPositions(p, fullMap, mapMetadata, imageIndex, roundDir)
+		processPlayerInformation(gs, fullMap, mapMetadata)
+		generateMap(fullMap, roundDir, imageIndex)
 	}
 }
 
@@ -206,18 +229,7 @@ func getCurrentTime(p dem.Parser) int {
 	return p.CurrentFrame() / tickRate
 }
 
-func processPlayerPositions(p dem.Parser, fullMap *utils.AnnotatedMap,
-	mapMetadata metadata.Map, imageIndex *int, roundDir string) {
-	gs := p.GameState()
-	tr := gs.TeamTerrorists()
-	//ct := gs.TeamCounterTerrorists()
-	(*fullMap).IconsList = nil
-	for _, t := range tr.Members() {
-
-		x, y := mapMetadata.TranslateScale(t.Position().X, t.Position().Y)
-		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "terrorist_1"}
-		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
-	}
+func generateMap(fullMap *utils.AnnotatedMap, roundDir string, imageIndex *int) {
 	img := utils.DrawMap(*fullMap)
 	third, err := os.Create(roundDir + "/output_map" +
 		strconv.Itoa(*imageIndex) + ".jpg")
@@ -227,4 +239,26 @@ func processPlayerPositions(p dem.Parser, fullMap *utils.AnnotatedMap,
 	jpeg.Encode(third, img, &jpeg.Options{jpeg.DefaultQuality})
 	*imageIndex++
 	defer third.Close()
+}
+
+func processPlayerPositions(gs dem.GameState, fullMap *utils.AnnotatedMap,
+	mapMetadata metadata.Map) {
+	tr := gs.TeamTerrorists()
+	ct := gs.TeamCounterTerrorists()
+	(*fullMap).IconsList = nil
+	//add t icons
+	for _, t := range tr.Members() {
+
+		x, y := mapMetadata.TranslateScale(t.Position().X, t.Position().Y)
+		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "terrorist_1"}
+		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+	}
+	//add ct icons
+	for _, ct := range ct.Members() {
+
+		x, y := mapMetadata.TranslateScale(ct.Position().X, ct.Position().Y)
+		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "ct_1"}
+		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+	}
+
 }
