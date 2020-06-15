@@ -5,6 +5,19 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Desktop",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${fileDirname}",
+      "env": {},
+      "args": [
+        "/home/mrdbarros/projetos/data/csgo_analyze/replays",
+        "/home/mrdbarros/projetos/data/csgo_analyze/processed",
+        128
+      ]
+    },
+    {
       "name": "Notebook",
       "type": "go",
       "request": "launch",

@@ -30,7 +30,7 @@ var posUpdateInterval = 2
 
 type playerMapping struct {
 	playerSeqID int
-	health      []float32
+	health      float32
 }
 
 var trMap = make(map[int]*playerMapping)
@@ -149,10 +149,10 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 
 	p.RegisterEventHandler(func(e events.RoundEnd) {
 
-		win_team := e.Winner
-		if win_team == 2 {
+		winTeam := e.Winner
+		if winTeam == 2 {
 			winTeamCurrentRound = "t"
-		} else if win_team == 3 {
+		} else if winTeam == 3 {
 			winTeamCurrentRound = "ct"
 		} else {
 			winTeamCurrentRound = "invalid"
@@ -219,10 +219,10 @@ func organizeTabularData(trMap map[int]*playerMapping,
 	var singleRow [10]string
 	for countSnapshot := 0; countSnapshot < snapshotCollectionSize; countSnapshot++ {
 		for _, playerData := range trMap {
-			singleRow[playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health[countSnapshot]), 'f', -1, 32)
+			singleRow[playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health), 'f', -1, 32)
 		}
 		for _, playerData := range ctMap {
-			singleRow[5+playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health[countSnapshot]), 'f', -1, 32)
+			singleRow[5+playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health), 'f', -1, 32)
 		}
 
 		csvData = append(csvData, singleRow[:])
@@ -230,19 +230,27 @@ func organizeTabularData(trMap map[int]*playerMapping,
 	return csvData
 }
 
-func processTeamHP(members []*common.Player, teamMap map[int]*playerMapping) {
+func processTeamHP(gs dem.GameState, members []*common.Player, teamMap map[int]*playerMapping) {
 	for _, t := range members {
-		fmt.Println(t.UserID, teamMap[t.UserID])
-		teamMap[t.UserID].health = append(teamMap[t.UserID].health, 0.0)
+		//fmt.Println(t.UserID, teamMap[t.UserID])
+		if val, ok := teamMap[t.UserID]; ok {
+			tMap2 := *val
+			tMap2.health = 0.0
+			teamMap[t.UserID] = &tMap2
+		} else {
+			fmt.Println("key", t.UserID, "not found")
+
+		}
+
 	}
 }
 
 func processPlayerHP(gs dem.GameState, fullMap *utils.AnnotatedMap,
 	trMap map[int]*playerMapping, ctMap map[int]*playerMapping) {
 	//add t icons
-	processTeamHP(gs.TeamTerrorists().Members(), trMap)
+	processTeamHP(gs, gs.TeamTerrorists().Members(), trMap)
 	//add ct icons
-	processTeamHP(gs.TeamCounterTerrorists().Members(), ctMap)
+	processTeamHP(gs, gs.TeamCounterTerrorists().Members(), ctMap)
 
 }
 
@@ -250,7 +258,7 @@ func remakeTeamMapping(members []*common.Player) map[int]*playerMapping {
 	teamMap := make(map[int]*playerMapping)
 	for _, player := range members {
 
-		teamMap[player.UserID] = &playerMapping{playerSeqID: 0, health: nil}
+		teamMap[player.UserID] = &playerMapping{playerSeqID: 0, health: 0.0}
 	}
 	seqID := 0
 	var keys []int
@@ -276,7 +284,7 @@ func processPlayerInformation(gs dem.GameState, fullMap *utils.AnnotatedMap,
 	mapMetadata metadata.Map, trMap map[int]*playerMapping, ctMap map[int]*playerMapping) {
 
 	processPlayerPositions(gs, fullMap, mapMetadata)
-	//processPlayerHP(gs, fullMap, trMap, ctMap)
+	processPlayerHP(gs, fullMap, trMap, ctMap)
 }
 
 func processFrameEnd(gs dem.GameState, p dem.Parser,
