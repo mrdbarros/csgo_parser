@@ -9,14 +9,14 @@ import (
 //returns map from mapName to mapImagePath
 func getMapsToImageMap() map[string]string {
 	return map[string]string{
-		"de_dust2":    "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_dust2.jpg",
-		"de_inferno":  "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_inferno.jpg",
-		"de_nuke":     "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_nuke.jpg",
-		"de_mirage":   "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_mirage.jpg",
-		"de_vertigo":  "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_vertigo.jpg",
-		"de_overpass": "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_overpass.jpg",
-		"de_cache":    "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_cache.jpg",
-		"de_train":    "/home/mrdbarros/projetos/data/csgo_analyze/images/maps/de_train.jpg",
+		"de_dust2":    "/home/marcel/projetos/data/csgo_analyze/images/maps/de_dust2.jpg",
+		"de_inferno":  "/home/marcel/projetos/data/csgo_analyze/images/maps/de_inferno.jpg",
+		"de_nuke":     "/home/marcel/projetos/data/csgo_analyze/images/maps/de_nuke.jpg",
+		"de_mirage":   "/home/marcel/projetos/data/csgo_analyze/images/maps/de_mirage.jpg",
+		"de_vertigo":  "/home/marcel/projetos/data/csgo_analyze/images/maps/de_vertigo.jpg",
+		"de_overpass": "/home/marcel/projetos/data/csgo_analyze/images/maps/de_overpass.jpg",
+		"de_cache":    "/home/marcel/projetos/data/csgo_analyze/images/maps/de_cache.jpg",
+		"de_train":    "/home/marcel/projetos/data/csgo_analyze/images/maps/de_train.jpg",
 	}
 }
 
@@ -26,12 +26,12 @@ func getIconNameToImageMap() map[string]string {
 		"smoke":        "smoke",
 		"flash":        "flash",
 		"molotov":      "molotov",
-		"terrorist_1":  "/home/mrdbarros/projetos/data/csgo_analyze/images/icons/t.jpg",
+		"terrorist_1":  "/home/marcel/projetos/data/csgo_analyze/images/icons/t.jpg",
 		"terrorist_2":  "terrorist_2",
 		"terrorist_3":  "terrorist_3",
 		"terrorist_4":  "terrorist_4",
 		"terrorist_5":  "terrorist_5",
-		"ct_1":         "/home/mrdbarros/projetos/data/csgo_analyze/images/icons/ct.jpg",
+		"ct_1":         "/home/marcel/projetos/data/csgo_analyze/images/icons/ct.jpg",
 		"ct_2":         "ct_2",
 		"ct_3":         "ct_3",
 		"ct_4":         "ct_4",

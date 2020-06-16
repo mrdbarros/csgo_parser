@@ -29,12 +29,11 @@ var tickRate = 0
 var posUpdateInterval = 2
 
 type playerMapping struct {
-	playerSeqID int
-	health      float32
+	playerSeqID  int
+	playerObject *common.Player
 }
 
-var trMap = make(map[int]*playerMapping)
-var ctMap = make(map[int]*playerMapping)
+var allPlayers = make(map[int]*playerMapping)
 
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
@@ -84,6 +83,8 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	}()
 	p := dem.NewParser(f)
 	defer f.Close()
+
+	var roundCSVPath string
 	header, err := p.ParseHeader()
 	checkError(err)
 	fmt.Println("Map:", header.MapName)
@@ -111,7 +112,8 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
 		if !(gs == nil) && roundDir != dirName {
-			processFrameEnd(gs, p, &fullMap, mapMetadata, &imageIndex, roundDir, &snapshotCollectionSize)
+			processFrameEnd(gs, p, &fullMap, mapMetadata, &imageIndex,
+				roundDir, &snapshotCollectionSize, roundCSVPath)
 		}
 
 	})
@@ -128,12 +130,10 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 				gameStarted = true
 			}
 		}
-		trMap, ctMap = remakePlayerMappings(gs)
+		allPlayers = remakePlayerMappings(gs)
 		newScore := "ct_" + strconv.Itoa(gs.TeamCounterTerrorists().Score()) +
 			"_t_" + strconv.Itoa(gs.TeamTerrorists().Score())
-		if gs.TeamTerrorists().Score() >= 6 && gs.TeamCounterTerrorists().Score() >= 10 {
-			fmt.Println(gs.TeamTerrorists().Score(), gs.TeamCounterTerrorists().Score())
-		}
+
 		roundDir = dirName + "/" + newScore
 		dirExists, _ := exists(roundDir)
 		imageIndex = 0
@@ -144,6 +144,10 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 		} else {
 			RemoveContents(roundDir)
 		}
+		roundCSVPath = roundDir + "/tabular.csv"
+		roundCSV, err := os.Create(roundCSVPath)
+		checkError(err)
+		defer roundCSV.Close()
 		roundStartTime = getCurrentTime(p)
 	})
 
@@ -168,8 +172,6 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 			_, err = fileWrite.WriteString(winTeamCurrentRound)
 			checkError(err)
 
-			//csvData := organizeTabularData(trMap, ctMap, snapshotCollectionSize)
-			//writeToCSV(csvData, roundDir+"/tabular.csv")
 		}
 
 	})
@@ -202,100 +204,123 @@ func main() {
 }
 
 func writeToCSV(data [][]string, filePath string) {
-	file, err := os.Create(filePath)
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, os.ModeAppend)
 	checkError(err)
-	defer file.Close()
-
 	writer := csv.NewWriter(file)
 
 	err = writer.WriteAll(data)
 	checkError(err)
 }
 
-func organizeTabularData(trMap map[int]*playerMapping,
-	ctMap map[int]*playerMapping, snapshotCollectionSize int) [][]string {
+// func organizeTabularData(allPlayers map[int]*playerMapping,
+// 	snapshotCollectionSize int) [][]string {
 
-	var csvData [][]string
-	var singleRow [10]string
-	for countSnapshot := 0; countSnapshot < snapshotCollectionSize; countSnapshot++ {
-		for _, playerData := range trMap {
-			singleRow[playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health), 'f', -1, 32)
-		}
-		for _, playerData := range ctMap {
-			singleRow[5+playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health), 'f', -1, 32)
-		}
+// 	var csvData [][]string
+// 	var singleRow [10]string
+// 	for countSnapshot := 0; countSnapshot < snapshotCollectionSize; countSnapshot++ {
+// 		ctCount, tCount := 0, 0
+// 		for _, playerData := range allPlayers {
+// 			if playerData.playerObject.Team == 2 { //terrorist
+// 				singleRow[tCount] = strconv.FormatFloat(float64(playerData.playerObject.Health(),
+// 				'f',-1,32)
 
-		csvData = append(csvData, singleRow[:])
-	}
-	return csvData
-}
+// 			} else if playerData.playerObject.Team == 3 { //ct
 
-func processTeamHP(gs dem.GameState, members []*common.Player, teamMap map[int]*playerMapping) {
-	for _, t := range members {
-		//fmt.Println(t.UserID, teamMap[t.UserID])
-		if val, ok := teamMap[t.UserID]; ok {
-			tMap2 := *val
-			tMap2.health = 0.0
-			teamMap[t.UserID] = &tMap2
+// 			}
+// 			singleRow[playerData.playerSeqID] = strconv.FormatFloat(float64(playerData.health), 'f', -1, 32)
+// 		}
+
+// 		csvData = append(csvData, singleRow[:])
+// 	}
+// 	return csvData
+// }
+
+// func processTeamHP(gs dem.GameState, members []*common.Player, teamMap map[int]*playerMapping) {
+// 	for _, t := range members {
+// 		//fmt.Println(t.UserID, teamMap[t.UserID])
+// 		if _, ok := teamMap[t.UserID]; ok {
+// 			teamMap[t.UserID].health = float32(t.Health()) / 100
+// 		} else {
+// 			fmt.Println("key", t.UserID, "not found")
+
+// 		}
+
+// 	}
+// }
+
+func processPlayersHP(fullMap *utils.AnnotatedMap,
+	allPlayers map[int]*playerMapping, roundCSVPath string, sortedUserIDs []int) {
+
+	var dataCSV [][]string
+	newCSVRow := [10]string{"0", "0", "0", "0", "0", "0", "0", "0", "0", "0"}
+	tCount := 0
+	ctCount := 0
+	for _, userID := range sortedUserIDs {
+		if _, ok := allPlayers[userID]; ok {
+			player := allPlayers[userID].playerObject
+			if player.Team == 2 { //terrorist
+				newCSVRow[tCount] = strconv.FormatFloat(float64(player.Health())/100, 'f', -1, 32)
+				tCount++
+			} else if player.Team == 3 { //ct
+				newCSVRow[5+ctCount] = strconv.FormatFloat(float64(player.Health())/100, 'f', -1, 32)
+				ctCount++
+			}
 		} else {
-			fmt.Println("key", t.UserID, "not found")
-
+			fmt.Println("key not found", userID)
 		}
 
 	}
+	dataCSV = append(dataCSV, newCSVRow[:])
+	writeToCSV(dataCSV, roundCSVPath)
 }
 
-func processPlayerHP(gs dem.GameState, fullMap *utils.AnnotatedMap,
-	trMap map[int]*playerMapping, ctMap map[int]*playerMapping) {
-	//add t icons
-	processTeamHP(gs, gs.TeamTerrorists().Members(), trMap)
-	//add ct icons
-	processTeamHP(gs, gs.TeamCounterTerrorists().Members(), ctMap)
-
-}
-
-func remakeTeamMapping(members []*common.Player) map[int]*playerMapping {
-	teamMap := make(map[int]*playerMapping)
-	for _, player := range members {
-
-		teamMap[player.UserID] = &playerMapping{playerSeqID: 0, health: 0.0}
+func remakePlayerMappings(gs dem.GameState) map[int]*playerMapping {
+	newAllPlayers := make(map[int]*playerMapping)
+	players := gs.Participants().Playing()
+	for _, player := range players {
+		newAllPlayers[player.UserID] = &playerMapping{playerSeqID: 0, playerObject: player}
 	}
 	seqID := 0
 	var keys []int
-	for k := range teamMap {
+	for k := range newAllPlayers {
 		keys = append(keys, k)
 	}
 	sort.Ints(keys)
 	for _, k := range keys {
-		teamMap[k].playerSeqID = seqID
+		newAllPlayers[k].playerSeqID = seqID
 		seqID++
 	}
-	return teamMap
+	return newAllPlayers
 }
 
-func remakePlayerMappings(gs dem.GameState) (map[int]*playerMapping, map[int]*playerMapping) {
+func sortPlayersByUserID(allPlayers map[int]*playerMapping) []int {
 
-	trMap := remakeTeamMapping(gs.TeamTerrorists().Members())
-	ctMap := remakeTeamMapping(gs.TeamCounterTerrorists().Members())
-	return trMap, ctMap
+	var keys []int
+	for userID := range allPlayers {
+		keys = append(keys, userID)
+	}
+	sort.Ints(keys)
+	return keys
 }
 
-func processPlayerInformation(gs dem.GameState, fullMap *utils.AnnotatedMap,
-	mapMetadata metadata.Map, trMap map[int]*playerMapping, ctMap map[int]*playerMapping) {
+func processPlayerInformation(fullMap *utils.AnnotatedMap,
+	mapMetadata metadata.Map, allPlayers map[int]*playerMapping,
+	roundCSVPath string) {
 
-	processPlayerPositions(gs, fullMap, mapMetadata)
-	processPlayerHP(gs, fullMap, trMap, ctMap)
+	sortedUserIDs := sortPlayersByUserID(allPlayers)
+	processPlayerPositions(allPlayers, fullMap, mapMetadata, sortedUserIDs)
+	processPlayersHP(fullMap, allPlayers, roundCSVPath, sortedUserIDs)
 }
 
 func processFrameEnd(gs dem.GameState, p dem.Parser,
 	fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, imageIndex *int,
-	roundDir string, snapshotCollectionSize *int) {
+	roundDir string, snapshotCollectionSize *int, roundCSVPath string) {
 	currentTime := getCurrentTime(p)
 	currentRoundTime := getRoundTime(p)
 	if currentRoundTime%posUpdateInterval == 0 && currentTime != lastUpdate {
 		lastUpdate = currentTime
 
-		processPlayerInformation(gs, fullMap, mapMetadata, trMap, ctMap)
+		processPlayerInformation(fullMap, mapMetadata, allPlayers, roundCSVPath)
 		generateMap(fullMap, roundDir, imageIndex)
 		*snapshotCollectionSize++
 	}
@@ -321,24 +346,27 @@ func generateMap(fullMap *utils.AnnotatedMap, roundDir string, imageIndex *int) 
 	defer third.Close()
 }
 
-func processPlayerPositions(gs dem.GameState, fullMap *utils.AnnotatedMap,
-	mapMetadata metadata.Map) {
-	tr := gs.TeamTerrorists()
-	ct := gs.TeamCounterTerrorists()
+func processPlayerPositions(allPlayers map[int]*playerMapping, fullMap *utils.AnnotatedMap,
+	mapMetadata metadata.Map, sortedUserIDs []int) {
+
 	(*fullMap).IconsList = nil
-	//add t icons
-	for _, t := range tr.Members() {
+	//add players icons
+	for _, userID := range sortedUserIDs {
+		if _, ok := allPlayers[userID]; ok {
+			player := allPlayers[userID].playerObject
+			x, y := mapMetadata.TranslateScale(player.Position().X, player.Position().Y)
+			var icon string
+			if player.Team == 2 { //terrorist
+				icon = "terrorist_1"
+			} else {
+				icon = "ct_1"
+			}
+			newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: icon}
+			(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+		} else {
+			fmt.Println("key not found", userID)
+		}
 
-		x, y := mapMetadata.TranslateScale(t.Position().X, t.Position().Y)
-		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "terrorist_1"}
-		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
-	}
-	//add ct icons
-	for _, ct := range ct.Members() {
-
-		x, y := mapMetadata.TranslateScale(ct.Position().X, ct.Position().Y)
-		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "ct_1"}
-		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
 	}
 
 }
