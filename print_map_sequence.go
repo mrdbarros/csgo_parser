@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync"
 
 	dem "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs"
 	"github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/common"
@@ -106,20 +107,72 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	winTeamCurrentRound := "t"
 	roundDir := dirName
 	snapshotCollectionSize := 0
-	fullMap := utils.AnnotatedMap{IconsList: nil, SourceMap: header.MapName}
 	mapMetadata := metadata.MapNameToMap[header.MapName]
 	imageIndex := 0
+	isNewRound := false
+	var smokeList []events.GrenadeEvent
+	var incendiaryList []events.GrenadeEvent
+	roundFreezeTime := false
+	bombPlanted := false
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
-		if !(gs == nil) && roundDir != dirName {
-			processFrameEnd(gs, p, &fullMap, mapMetadata, &imageIndex,
-				roundDir, &snapshotCollectionSize, roundCSVPath)
+		if !(gs == nil) && roundDir != dirName && !roundFreezeTime {
+			processFrameEnd(gs, header.MapName, p, mapMetadata, &imageIndex,
+				roundDir, &snapshotCollectionSize, roundCSVPath, &isNewRound, bombPlanted, smokeList, incendiaryList)
+		}
+
+	})
+
+	p.RegisterEventHandler(func(e events.RoundFreezetimeEnd) {
+		roundFreezeTime = false
+
+	})
+
+	p.RegisterEventHandler(func(e events.BombPlanted) {
+		bombPlanted = true
+
+	})
+
+	p.RegisterEventHandler(func(e events.SmokeStart) {
+		smokeList = append(smokeList, e.GrenadeEvent)
+
+	})
+
+	p.RegisterEventHandler(func(e events.SmokeExpired) {
+		for i, smokeEvent := range smokeList {
+			if e.GrenadeEvent.GrenadeEntityID == smokeEvent.GrenadeEntityID {
+				// Remove the element at index i from a.
+				smokeList[i] = smokeList[len(smokeList)-1]          // Copy last element to index i.
+				smokeList[len(smokeList)-1] = events.GrenadeEvent{} // Erase last element.
+				smokeList = smokeList[:len(smokeList)-1]
+			}
+		}
+
+	})
+
+	p.RegisterEventHandler(func(e events.FireGrenadeStart) {
+		incendiaryList = append(incendiaryList, e.GrenadeEvent)
+
+	})
+
+	p.RegisterEventHandler(func(e events.FireGrenadeExpired) {
+		for i, incendiaryEvent := range incendiaryList {
+			if e.GrenadeEvent.GrenadeEntityID == incendiaryEvent.GrenadeEntityID {
+				// Remove the element at index i from a.
+				incendiaryList[i] = incendiaryList[len(incendiaryList)-1]     // Copy last element to index i.
+				incendiaryList[len(incendiaryList)-1] = events.GrenadeEvent{} // Erase last element.
+				incendiaryList = incendiaryList[:len(incendiaryList)-1]
+			}
 		}
 
 	})
 
 	p.RegisterEventHandler(func(e events.RoundStart) {
 		gs := p.GameState()
+		roundFreezeTime = true
+		bombPlanted = false
+		smokeList = []events.GrenadeEvent{}
+		incendiaryList = []events.GrenadeEvent{}
 		if !(gs == nil) {
 			if gs.TeamCounterTerrorists().Score() == 0 && gs.TeamTerrorists().Score() == 0 && !gameStarted {
 				gameReset = true
@@ -145,6 +198,7 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 			RemoveContents(roundDir)
 		}
 		roundCSVPath = roundDir + "/tabular.csv"
+		isNewRound = true
 		roundCSV, err := os.Create(roundCSVPath)
 		checkError(err)
 		defer roundCSV.Close()
@@ -161,10 +215,6 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 		} else {
 			winTeamCurrentRound = "invalid"
 		}
-	})
-
-	p.RegisterEventHandler(func(e events.RoundEndOfficial) {
-		//rename round folder with winner team
 		if roundDir != dirName {
 			fileWrite, err := os.Create(roundDir + "/winner.txt")
 			checkError(err)
@@ -173,8 +223,8 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 			checkError(err)
 
 		}
-
 	})
+
 	err = p.ParseToEnd()
 	p.Close()
 	checkError(err)
@@ -187,6 +237,8 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 }
 
 func main() {
+
+	var waitGroup sync.WaitGroup
 	demPath := os.Args[1]
 	destDir := os.Args[2]
 
@@ -248,30 +300,36 @@ func writeToCSV(data [][]string, filePath string) {
 // 	}
 // }
 
-func processPlayersHP(fullMap *utils.AnnotatedMap,
-	allPlayers map[int]*playerMapping, roundCSVPath string, sortedUserIDs []int) {
+func processPlayersHPAndFlash(allPlayers map[int]*playerMapping, sortedUserIDs []int) (newCSVRow []string, header []string) {
 
-	var dataCSV [][]string
-	newCSVRow := [10]string{"0", "0", "0", "0", "0", "0", "0", "0", "0", "0"}
+	newCSVRow = []string{
+		"0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0", "0"}
 	tCount := 0
 	ctCount := 0
 	for _, userID := range sortedUserIDs {
 		if _, ok := allPlayers[userID]; ok {
 			player := allPlayers[userID].playerObject
-			if player.Team == 2 { //terrorist
+			if player.Team == 2 && tCount <= 4 { //terrorist
 				newCSVRow[tCount] = strconv.FormatFloat(float64(player.Health())/100, 'f', -1, 32)
+				newCSVRow[10+tCount] = strconv.FormatFloat(player.FlashDurationTimeRemaining().Seconds(), 'f', -1, 32)
 				tCount++
-			} else if player.Team == 3 { //ct
+			} else if player.Team == 3 && ctCount <= 4 { //ct
 				newCSVRow[5+ctCount] = strconv.FormatFloat(float64(player.Health())/100, 'f', -1, 32)
+				newCSVRow[15+ctCount] = strconv.FormatFloat(player.FlashDurationTimeRemaining().Seconds(), 'f', -1, 32)
 				ctCount++
+			} else if tCount > 4 || ctCount > 4 {
+				fmt.Println("invalid team size")
 			}
 		} else {
 			fmt.Println("key not found", userID)
 		}
 
 	}
-	dataCSV = append(dataCSV, newCSVRow[:])
-	writeToCSV(dataCSV, roundCSVPath)
+	header = []string{"t_1", "t_2", "t_3", "t_4", "t_5", "ct_1", "ct_2", "ct_3", "ct_4", "ct_5",
+		"t_1_blindtime", "t_2_blindtime", "t_3_blindtime", "t_4_blindtime", "t_5_blindtime",
+		"ct_1_blindtime", "ct_2_blindtime", "ct_3_blindtime", "ct_4_blindtime", "ct_5_blindtime"}
+	return newCSVRow[:], header
 }
 
 func remakePlayerMappings(gs dem.GameState) map[int]*playerMapping {
@@ -303,27 +361,182 @@ func sortPlayersByUserID(allPlayers map[int]*playerMapping) []int {
 	return keys
 }
 
+func findIntInSlice(slice []int, number int) bool {
+	for _, sliceNumber := range slice {
+		if sliceNumber == number {
+			return true
+		}
+	}
+	return false
+}
+
+func fillPlayerWeapons(player *common.Player) []string {
+	//"mainweapon", "secweapon", "flashbangs", "hassmoke", "hasmolotov", "hashe","armorvalue","hashelmet","hasdefusekit/hasc4",
+
+	weapons := []string{"0", "0", "0", "0", "0", "0", "0", "0", "0"}
+
+	primaryWeaponClasses := []int{2, 3, 4}
+	secondaryWeaponClasses := []int{1}
+
+	molotovAndIncendiary := []int{502, 503}
+
+	equipSlice := player.Weapons()
+	equipClass := 0
+	equipType := 0
+	for _, equip := range equipSlice {
+		equipClass = int(equip.Class())
+		equipType = int(equip.Type)
+		if findIntInSlice(primaryWeaponClasses, equipClass) {
+			weapons[0] = strconv.Itoa(equipType)
+		}
+		if findIntInSlice(secondaryWeaponClasses, equipClass) {
+			weapons[1] = strconv.Itoa(equipType)
+		}
+		if equipType == 504 { //flash
+			weapons[2] = strconv.Itoa(player.AmmoLeft[equip.AmmoType()])
+		}
+		if equipType == 505 { //smoke
+			weapons[3] = "1"
+		}
+		if findIntInSlice(molotovAndIncendiary, equipType) { //molotov or incendiary
+			weapons[4] = "1"
+		}
+		if equipType == 506 { //HE
+			weapons[5] = "1"
+		}
+		if equipType == 406 || equipType == 404 { //defuse kit / c4
+			weapons[8] = "1"
+		}
+
+	}
+	weapons[6] = strconv.Itoa(player.Armor())
+	if player.HasHelmet() {
+		weapons[7] = "1"
+	}
+	return weapons
+}
+
+func processPlayerWeapons(allPlayers map[int]*playerMapping, sortedUserIDs []int) (newCSVRow []string, header []string) {
+	newCSVRow = []string{
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0",
+		"0", "0", "0", "0", "0", "0", "0", "0", "0"}
+	tCount := 0
+	ctCount := 0
+	lenPerPlayer := len(newCSVRow) / 10
+	playerInfo := []string{}
+	for _, userID := range sortedUserIDs {
+		if _, ok := allPlayers[userID]; ok {
+			player := allPlayers[userID].playerObject
+			if player.Team == 2 && tCount <= 4 { //terrorist
+				playerInfo = fillPlayerWeapons(player)
+				for i, info := range playerInfo {
+					newCSVRow[tCount*lenPerPlayer+i] = info
+				}
+
+				tCount++
+			} else if player.Team == 3 && ctCount <= 4 { //ct
+				playerInfo = fillPlayerWeapons(player)
+				for i, info := range playerInfo {
+					newCSVRow[5*lenPerPlayer+ctCount*lenPerPlayer+i] = info
+				}
+				ctCount++
+			} else if tCount > 4 || ctCount > 4 {
+				fmt.Println("invalid team size")
+			}
+		} else {
+			fmt.Println("key not found", userID)
+		}
+
+	}
+	header = []string{
+		"t_1_mainweapon", "t_1_secweapon", "t_1_flashbangs", "t_1_hassmoke", "t_1_hasmolotov", "t_1_hashe", "t_1_armor", "t_1_hashelmet", "t_1_hasc4",
+		"t_2_mainweapon", "t_2_secweapon", "t_2_flashbangs", "t_2_hassmoke", "t_2_hasmolotov", "t_2_hashe", "t_2_armor", "t_2_hashelmet", "t_2_hasc4",
+		"t_3_mainweapon", "t_3_secweapon", "t_3_flashbangs", "t_3_hassmoke", "t_3_hasmolotov", "t_3_hashe", "t_3_armor", "t_3_hashelmet", "t_3_hasc4",
+		"t_4_mainweapon", "t_4_secweapon", "t_4_flashbangs", "t_4_hassmoke", "t_4_hasmolotov", "t_4_hashe", "t_4_armor", "t_4_hashelmet", "t_4_hasc4",
+		"t_5_mainweapon", "t_5_secweapon", "t_5_flashbangs", "t_5_hassmoke", "t_5_hasmolotov", "t_5_hashe", "t_5_armor", "t_5_hashelmet", "t_5_hasc4",
+		"ct_1_mainweapon", "ct_1_secweapon", "ct_1_flashbangs", "ct_1_hassmoke", "ct_1_hasmolotov", "ct_1_hashe", "ct_1_armor", "ct_1_hashelmet", "ct_1_hasdefusekit",
+		"ct_2_mainweapon", "ct_2_secweapon", "ct_2_flashbangs", "ct_2_hassmoke", "ct_2_hasmolotov", "ct_2_hashe", "ct_2_armor", "ct_2_hashelmet", "ct_2_hasdefusekit",
+		"ct_3_mainweapon", "ct_3_secweapon", "ct_3_flashbangs", "ct_3_hassmoke", "ct_3_hasmolotov", "ct_3_hashe", "ct_3_armor", "ct_3_hashelmet", "ct_3_hasdefusekit",
+		"ct_4_mainweapon", "ct_4_secweapon", "ct_4_flashbangs", "ct_4_hassmoke", "ct_4_hasmolotov", "ct_4_hashe", "ct_4_armor", "ct_4_hashelmet", "ct_4_hasdefusekit",
+		"ct_5_mainweapon", "ct_5_secweapon", "ct_5_flashbangs", "ct_5_hassmoke", "ct_5_hasmolotov", "ct_5_hashe", "ct_5_armor", "ct_5_hashelmet", "ct_5_hasdefusekit"}
+	return newCSVRow[:], header
+}
+
 func processPlayerInformation(fullMap *utils.AnnotatedMap,
-	mapMetadata metadata.Map, allPlayers map[int]*playerMapping,
-	roundCSVPath string) {
+	mapMetadata metadata.Map, allPlayers map[int]*playerMapping) (newCSVRow []string, newHeader []string) {
 
 	sortedUserIDs := sortPlayersByUserID(allPlayers)
 	processPlayerPositions(allPlayers, fullMap, mapMetadata, sortedUserIDs)
-	processPlayersHP(fullMap, allPlayers, roundCSVPath, sortedUserIDs)
+
+	tempCSV, tempHeader := processPlayersHPAndFlash(allPlayers, sortedUserIDs)
+	newCSVRow = append(newCSVRow, tempCSV...)
+	newHeader = append(newHeader, tempHeader...)
+
+	tempCSV, tempHeader = processPlayerWeapons(allPlayers, sortedUserIDs)
+	newCSVRow = append(newCSVRow, tempCSV...)
+	newHeader = append(newHeader, tempHeader...)
+
+	return newCSVRow, newHeader
 }
 
-func processFrameEnd(gs dem.GameState, p dem.Parser,
-	fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, imageIndex *int,
-	roundDir string, snapshotCollectionSize *int, roundCSVPath string) {
+func processOtherGameInfo(gs dem.GameState, fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, bombPlanted bool, currentRoundTime int,
+	smokeList []events.GrenadeEvent, incendiaryList []events.GrenadeEvent) (newCSVRow []string, header []string) {
+	newCSVRow = []string{"0"}
+	if bombPlanted {
+		bombPosition := gs.Bomb().Position()
+		x, y := mapMetadata.TranslateScale(bombPosition.X, bombPosition.Y)
+		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "bomb_planted"}
+		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+	}
+
+	processGrenadesPositions(fullMap, mapMetadata, smokeList, incendiaryList)
+
+	newCSVRow[0] = strconv.Itoa(currentRoundTime)
+	header = []string{"round_time"}
+	return newCSVRow, header
+}
+
+func processFrameEnd(gs dem.GameState, mapName string, p dem.Parser, mapMetadata metadata.Map, imageIndex *int,
+	roundDir string, snapshotCollectionSize *int, roundCSVPath string, isNewRound *bool, bombPlanted bool, smokeList []events.GrenadeEvent,
+	incendiaryList []events.GrenadeEvent) {
 	currentTime := getCurrentTime(p)
 	currentRoundTime := getRoundTime(p)
 	if currentRoundTime%posUpdateInterval == 0 && currentTime != lastUpdate {
 		lastUpdate = currentTime
 
-		processPlayerInformation(fullMap, mapMetadata, allPlayers, roundCSVPath)
-		generateMap(fullMap, roundDir, imageIndex)
+		writeData := [][]string{}
+		fullMap := utils.AnnotatedMap{IconsList: nil, SourceMap: mapName}
+		newCSVRow := []string{}
+		newHeader := []string{}
+		tempCSV, tempHeader := processPlayerInformation(&fullMap, mapMetadata, allPlayers)
+		newCSVRow = append(newCSVRow, tempCSV...)
+		newHeader = append(newHeader, tempHeader...)
+		tempCSV, tempHeader = processOtherGameInfo(gs, &fullMap, mapMetadata, bombPlanted, currentRoundTime, smokeList, incendiaryList)
+		newCSVRow = append(newCSVRow, tempCSV...)
+		newHeader = append(newHeader, tempHeader...)
+		generateMap(&fullMap, roundDir, imageIndex)
+
+		if *isNewRound {
+			writeData = append(writeData, newHeader)
+			writeData = append(writeData, newCSVRow)
+			writeToCSV(writeData, roundCSVPath)
+			*isNewRound = false
+		} else {
+			writeData = append(writeData, newCSVRow)
+			writeToCSV(writeData, roundCSVPath)
+		}
+
 		*snapshotCollectionSize++
 	}
+
 }
 
 func getRoundTime(p dem.Parser) int {
@@ -346,10 +559,25 @@ func generateMap(fullMap *utils.AnnotatedMap, roundDir string, imageIndex *int) 
 	defer third.Close()
 }
 
+func processGrenadesPositions(fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, smokeList []events.GrenadeEvent, incendiaryList []events.GrenadeEvent) {
+	//add incendiary icons
+
+	for _, incendiary := range incendiaryList {
+		x, y := mapMetadata.TranslateScale(incendiary.Position.X, incendiary.Position.Y)
+		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "incendiary"}
+		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+	}
+	//add smoke icons
+	for _, smoke := range smokeList {
+		x, y := mapMetadata.TranslateScale(smoke.Position.X, smoke.Position.Y)
+		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "smoke"}
+		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+	}
+}
+
 func processPlayerPositions(allPlayers map[int]*playerMapping, fullMap *utils.AnnotatedMap,
 	mapMetadata metadata.Map, sortedUserIDs []int) {
 
-	(*fullMap).IconsList = nil
 	//add players icons
 	for _, userID := range sortedUserIDs {
 		if _, ok := allPlayers[userID]; ok {

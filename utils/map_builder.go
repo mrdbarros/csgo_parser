@@ -23,9 +23,9 @@ func getMapsToImageMap() map[string]string {
 //returns map from iconName to iconImagePath
 func getIconNameToImageMap() map[string]string {
 	return map[string]string{
-		"smoke":        "smoke",
+		"smoke":        "/home/marcel/projetos/data/csgo_analyze/images/icons/smoke.jpg",
 		"flash":        "flash",
-		"molotov":      "molotov",
+		"incendiary":   "/home/marcel/projetos/data/csgo_analyze/images/icons/incendiary.jpg",
 		"terrorist_1":  "/home/marcel/projetos/data/csgo_analyze/images/icons/t.jpg",
 		"terrorist_2":  "terrorist_2",
 		"terrorist_3":  "terrorist_3",
@@ -37,8 +37,8 @@ func getIconNameToImageMap() map[string]string {
 		"ct_4":         "ct_4",
 		"ct_5":         "ct_5",
 		"he":           "he",
-		"bomb_planted": "bomb_planted",
-		"bomb_droped":  "bomb_droped",
+		"bomb_planted": "/home/marcel/projetos/data/csgo_analyze/images/icons/bomb_planted.jpg",
+		"bomb_dropped": "bomb_dropped",
 	}
 }
 

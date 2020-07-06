@@ -12,8 +12,8 @@
       "program": "${fileDirname}",
       "env": {},
       "args": [
-        "/home/mrdbarros/projetos/data/csgo_analyze/replays",
-        "/home/mrdbarros/projetos/data/csgo_analyze/processed",
+        "/home/marcel/projetos/data/csgo_analyze/replays",
+        "/home/marcel/projetos/data/csgo_analyze/processed_test",
         128
       ]
     },
@@ -26,7 +26,7 @@
       "env": {},
       "args": [
         "/home/marcel/projetos/data/csgo_analyze/replays",
-        "/home/marcel/projetos/data/csgo_analyze/processed",
+        "/home/marcel/projetos/data/csgo_analyze/processed_test",
         128
       ]
     },
