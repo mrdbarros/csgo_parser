@@ -3,6 +3,7 @@ package utils
 import (
 	"image"
 	"image/draw"
+	_ "image/png" //png thru image.decode
 	"os"
 )
 
@@ -39,6 +40,11 @@ func getIconNameToImageMap() map[string]string {
 		"he":           "he",
 		"bomb_planted": "/home/marcel/projetos/data/csgo_analyze/images/icons/bomb_planted.jpg",
 		"bomb_dropped": "bomb_dropped",
+		"1":            "/home/marcel/projetos/data/csgo_analyze/images/icons/1_20x20.png",
+		"2":            "/home/marcel/projetos/data/csgo_analyze/images/icons/2_20x20.png",
+		"3":            "/home/marcel/projetos/data/csgo_analyze/images/icons/3_20x20.png",
+		"4":            "/home/marcel/projetos/data/csgo_analyze/images/icons/4_20x20.png",
+		"5":            "/home/marcel/projetos/data/csgo_analyze/images/icons/5_20x20.png",
 	}
 }
 

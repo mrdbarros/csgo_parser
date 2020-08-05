@@ -35,13 +35,9 @@
       "type": "go",
       "request": "launch",
       "mode": "auto",
-      "program": "${fileDirname}",
+      "program": "${fileDirname}/utils",
       "env": {},
       "args": [
-        "C:/Users/marce/projetos/data/csgo_analyze/replays/furia-vs-mibr-inferno.dem",
-        1,
-        "C:/Users/marce/projetos/data/csgo_analyze/processed",
-        128
       ]
     }
   ]

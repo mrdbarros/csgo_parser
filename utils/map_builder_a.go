@@ -23,5 +23,5 @@ func DrawMapTest() {
 }
 
 func main() {
-	DrawMapTest()
+	PadLeft("2", "0", 2)
 }
