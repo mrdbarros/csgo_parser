@@ -11,10 +11,10 @@
       "mode": "auto",
       "program": "${fileDirname}",
       "env": {},
-      "args": [
+      "args": ["-mode=dir",
         "/home/marcel/projetos/data/csgo_analyze/replays",
-        "/home/marcel/projetos/data/csgo_analyze/processed_test",
-        128
+        "/home/marcel/projetos/data/csgo_analyze/processed",
+        128,
       ]
     },
     {

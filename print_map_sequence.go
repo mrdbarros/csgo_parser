@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"image/jpeg"
 	"io/ioutil"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 
+	dp "github.com/markus-wa/godispatch"
+
 	dem "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs"
 	"github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/common"
 	events "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/events"
@@ -19,18 +22,116 @@ import (
 	"github.com/nfnt/resize"
 )
 
-var currentState = ""
-var gameReset = false
-var gameStarted = false
-var discretizeFactor = 20.0
-var roundStartTime float64
-var lastUpdate = 0.0
-var tickRate = 0
-var updateInterval = 2.0
-
 type playerMapping struct {
 	playerSeqID  int
 	playerObject *common.Player
+}
+
+type CompositeEventHandler interface {
+	Register() error
+	Unregister() error
+	SetConfig(parser *dem.Parser, tickRate int, mapMetadata metadata.Map) error
+	GetIcons() ([]utils.Icon, error)
+}
+
+//smokes and mollies
+type BaseIcon interface {
+	CompositeEventHandler
+	SetBaseIcon(iconName string)
+}
+
+type poppingGrenadeHandler struct {
+	parser                *dem.Parser
+	tickRate              int
+	activeGrenades        []*grenadeTracker
+	grenadeStartHandlerID dp.HandlerIdentifier
+	baseIcons             map[common.EquipmentType]utils.Icon
+	mapMetadata           metadata.Map
+}
+
+//e holds smoke start/expired or inferno start/expired and other grenade events
+func (ph *poppingGrenadeHandler) GrenadeStartHandler(e events.GrenadeEventIf) {
+
+	// if molly, incgrenade or smoke
+	if e.Base().GrenadeType == common.EqSmoke || e.Base().GrenadeType == common.EqIncendiary || e.Base().GrenadeType == common.EqMolotov {
+		parser := *(ph.parser)
+		eventTime := getCurrentTime(parser, ph.tickRate)
+		grenadeEntityID := e.Base().GrenadeEntityID
+		if ph.IsTracked(grenadeEntityID) {
+			ph.RemoveGrenade(grenadeEntityID)
+		} else {
+			newGrenade := grenadeTracker{grenadeEvent: e.Base(), grenadeTime: eventTime}
+			ph.activeGrenades = append(ph.activeGrenades, &newGrenade)
+		}
+
+	}
+
+}
+
+func (ph poppingGrenadeHandler) IsTracked(entityID int) bool {
+	for _, activeGrenade := range ph.activeGrenades {
+		if activeGrenade.grenadeEvent.GrenadeEntityID == entityID {
+			return true
+		}
+
+	}
+	return false
+}
+
+func (ph *poppingGrenadeHandler) Register() error {
+	parser := *(ph.parser)
+	ph.grenadeStartHandlerID = parser.RegisterEventHandler(ph.GrenadeStartHandler)
+	return nil
+}
+
+func (ph *poppingGrenadeHandler) Unregister() error {
+	parser := *(ph.parser)
+	parser.UnregisterEventHandler(ph.grenadeStartHandlerID)
+	return nil
+
+}
+
+func (ph *poppingGrenadeHandler) GetIcons() ([]utils.Icon, error) {
+	var iconList []utils.Icon
+
+	for _, activeGrenade := range ph.activeGrenades {
+		newIcon := ph.baseIcons[activeGrenade.grenadeEvent.GrenadeType]
+		x, y := ph.mapMetadata.TranslateScale(activeGrenade.grenadeEvent.Position.X, activeGrenade.grenadeEvent.Position.Y)
+		newIcon.X, newIcon.Y = x, y
+		iconList = append(iconList, newIcon)
+	}
+	return iconList, nil
+}
+
+func (ph *poppingGrenadeHandler) SetConfig(parser *dem.Parser, tickRate int, mapMetadata metadata.Map) error {
+	ph.parser = parser
+	ph.tickRate = tickRate
+	ph.mapMetadata = mapMetadata
+	return nil
+}
+
+func (ph *poppingGrenadeHandler) RemoveGrenade(entityID int) {
+
+	for i, grenade := range ph.activeGrenades {
+		if grenade.grenadeEvent.GrenadeEntityID == entityID {
+			ph.activeGrenades[i] = ph.activeGrenades[len(ph.activeGrenades)-1]
+			ph.activeGrenades = ph.activeGrenades[:(len(ph.activeGrenades) - 1)]
+			break
+		}
+	}
+}
+
+func (ph *poppingGrenadeHandler) SetBaseIcons() {
+	ph.baseIcons = map[common.EquipmentType]utils.Icon{
+		505: utils.Icon{IconName: utils.SmokeIconName},
+		502: utils.Icon{IconName: utils.IncendiaryIconName},
+		503: utils.Icon{IconName: utils.IncendiaryIconName},
+	}
+}
+
+type grenadeTracker struct {
+	grenadeEvent events.GrenadeEvent
+	grenadeTime  float64
 }
 
 var allPlayers = make(map[int]*playerMapping)
@@ -73,7 +174,7 @@ func RemoveContents(dir string) error {
 	return nil
 }
 
-func processDemoFile(demPath string, fileID int, destDir string) {
+func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	f, err := os.Open(demPath)
 	checkError(err)
 	defer func() {
@@ -84,7 +185,14 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	p := dem.NewParser(f)
 	defer f.Close()
 
+	var currentState = ""
+	var roundStartTime float64
+	var lastUpdate = 0.0
+	var updateInterval = 1.5
 	var roundCSVPath string
+
+	var popHandler poppingGrenadeHandler
+
 	header, err := p.ParseHeader()
 	checkError(err)
 	fmt.Println("Map:", header.MapName)
@@ -101,21 +209,36 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 	checkError(err)
 
 	defer fileWrite.Close()
-	winTeamCurrentRound := "t"
+	winTeamCurrentRound := ""
+	imgSize := 800
 	roundDir := dirName
 	snapshotCollectionSize := 0
 	mapMetadata := metadata.MapNameToMap[header.MapName]
 	imageIndex := 0
 	isNewRound := false
-	var smokeList []events.GrenadeEvent
-	var incendiaryList []events.GrenadeEvent
 	roundFreezeTime := false
 	bombPlanted := false
+	var bombStart float64
+	roundEndRegistered := false
+
+	var allHandlers []CompositeEventHandler
+
+	popHandler.SetConfig(&p, tickRate, mapMetadata)
+	popHandler.SetBaseIcons()
+	popHandler.Register()
+	allHandlers = append(allHandlers, &popHandler)
+
 	p.RegisterEventHandler(func(e events.FrameDone) {
 		gs := p.GameState()
-		if !(gs == nil) && roundDir != dirName && !roundFreezeTime {
+		currentRoundTime := getRoundTime(p, roundStartTime, tickRate)
+		if !(gs == nil) && roundDir != dirName && !roundFreezeTime && !roundEndRegistered && (currentRoundTime-lastUpdate) > updateInterval {
+			lastUpdate = currentRoundTime
 			processFrameEnd(gs, header.MapName, p, mapMetadata, &imageIndex,
-				roundDir, &snapshotCollectionSize, roundCSVPath, &isNewRound, bombPlanted, smokeList, incendiaryList)
+				roundDir, &snapshotCollectionSize, roundCSVPath, &isNewRound, bombPlanted, bombStart,
+				imgSize, currentRoundTime, allHandlers)
+			if winTeamCurrentRound != "" {
+				roundEndRegistered = true
+			}
 		}
 
 	})
@@ -127,40 +250,7 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 
 	p.RegisterEventHandler(func(e events.BombPlanted) {
 		bombPlanted = true
-
-	})
-
-	p.RegisterEventHandler(func(e events.SmokeStart) {
-		smokeList = append(smokeList, e.GrenadeEvent)
-
-	})
-
-	p.RegisterEventHandler(func(e events.SmokeExpired) {
-		for i, smokeEvent := range smokeList {
-			if e.GrenadeEvent.GrenadeEntityID == smokeEvent.GrenadeEntityID {
-				// Remove the element at index i from a.
-				smokeList[i] = smokeList[len(smokeList)-1]          // Copy last element to index i.
-				smokeList[len(smokeList)-1] = events.GrenadeEvent{} // Erase last element.
-				smokeList = smokeList[:len(smokeList)-1]
-			}
-		}
-
-	})
-
-	p.RegisterEventHandler(func(e events.FireGrenadeStart) {
-		incendiaryList = append(incendiaryList, e.GrenadeEvent)
-
-	})
-
-	p.RegisterEventHandler(func(e events.FireGrenadeExpired) {
-		for i, incendiaryEvent := range incendiaryList {
-			if e.GrenadeEvent.GrenadeEntityID == incendiaryEvent.GrenadeEntityID {
-				// Remove the element at index i from a.
-				incendiaryList[i] = incendiaryList[len(incendiaryList)-1]     // Copy last element to index i.
-				incendiaryList[len(incendiaryList)-1] = events.GrenadeEvent{} // Erase last element.
-				incendiaryList = incendiaryList[:len(incendiaryList)-1]
-			}
-		}
+		bombStart = getRoundTime(p, roundStartTime, tickRate)
 
 	})
 
@@ -168,11 +258,12 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 		gs := p.GameState()
 		roundFreezeTime = true
 		bombPlanted = false
-		smokeList = []events.GrenadeEvent{}
-		incendiaryList = []events.GrenadeEvent{}
+		winTeamCurrentRound = ""
+		roundEndRegistered = false
 
 		allPlayers = remakePlayerMappings(gs)
-		newScore := "ct_" + utils.PadLeft(strconv.Itoa(gs.TeamCounterTerrorists().Score()), "0", 2) +
+		roundNumber := gs.TeamCounterTerrorists().Score() + gs.TeamTerrorists().Score()
+		newScore := utils.PadLeft(strconv.Itoa(roundNumber), "0", 2) + "_ct_" + utils.PadLeft(strconv.Itoa(gs.TeamCounterTerrorists().Score()), "0", 2) +
 			"_t_" + utils.PadLeft(strconv.Itoa(gs.TeamTerrorists().Score()), "0", 2)
 
 		roundDir = dirName + "/" + newScore
@@ -191,7 +282,7 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 		checkError(err)
 		defer roundCSV.Close()
 
-		roundStartTime = getCurrentTime(p)
+		roundStartTime = getCurrentTime(p, tickRate)
 		lastUpdate = 0.0
 	})
 
@@ -228,19 +319,27 @@ func processDemoFile(demPath string, fileID int, destDir string) {
 }
 
 func main() {
-	//var waitGroup sync.WaitGroup
-	demPath := os.Args[1]
-	destDir := os.Args[2]
+	demPath := os.Args[2]
+	destDir := os.Args[3]
 
-	tickRate, _ = strconv.Atoi(os.Args[3])
+	mode := flag.String("mode", "file", "process mode (file/dir)")
 	fileID := 0
-	files, err := ioutil.ReadDir(demPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, f := range files {
-		processDemoFile(demPath+"/"+f.Name(), fileID, destDir)
-		fileID++
+	tickRate, _ := strconv.Atoi(os.Args[4])
+	flag.Parse()
+	if *mode == "file" {
+		ProcessDemoFile(demPath, fileID, destDir, tickRate)
+	} else if *mode == "dir" {
+		files, err := ioutil.ReadDir(demPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, f := range files {
+			ProcessDemoFile(demPath+"/"+f.Name(), fileID, destDir, tickRate)
+			fileID++
+		}
+
+	} else {
+		log.Fatal("invalid mode.")
 	}
 
 }
@@ -305,19 +404,33 @@ func processPlayersHPAndFlash(allPlayers map[int]*playerMapping, sortedUserIDs [
 func remakePlayerMappings(gs dem.GameState) map[int]*playerMapping {
 	newAllPlayers := make(map[int]*playerMapping)
 	players := gs.Participants().Playing()
+	ctCount := 0
+	tCount := 0
+	playerIndex := 0
 	for _, player := range players {
-		newAllPlayers[player.UserID] = &playerMapping{playerSeqID: 0, playerObject: player}
+		isCT := (player.Team == 3)
+		isTR := (player.Team == 2)
+
+		if !isCT && tCount > 4 || isCT && ctCount > 4 {
+			fmt.Println("invalid team size")
+			break
+		}
+
+		if !(isCT || isTR) {
+			fmt.Println("invalid team")
+			break
+		}
+
+		if isCT {
+			playerIndex = 5 + ctCount
+			ctCount++
+		} else if isTR {
+			playerIndex = tCount
+			tCount++
+		}
+		newAllPlayers[player.UserID] = &playerMapping{playerSeqID: playerIndex, playerObject: player}
 	}
-	seqID := 0
-	var keys []int
-	for k := range newAllPlayers {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-	for _, k := range keys {
-		newAllPlayers[k].playerSeqID = seqID
-		seqID++
-	}
+
 	return newAllPlayers
 }
 
@@ -398,8 +511,6 @@ func processPlayerWeapons(allPlayers map[int]*playerMapping, sortedUserIDs []int
 		"0", "0", "0", "0", "0", "0", "0", "0", "0",
 		"0", "0", "0", "0", "0", "0", "0", "0", "0",
 		"0", "0", "0", "0", "0", "0", "0", "0", "0"}
-	tCount := 0
-	ctCount := 0
 	lenPerPlayer := len(newCSVRow) / 10
 	playerInfo := []string{}
 	playerBasePos := 0
@@ -408,26 +519,7 @@ func processPlayerWeapons(allPlayers map[int]*playerMapping, sortedUserIDs []int
 			player := allPlayers[userID].playerObject
 			playerInfo = fillPlayerWeapons(player)
 
-			isCT := (player.Team == 3)
-			isTR := (player.Team == 2)
-
-			if !isCT && tCount > 4 || isCT && ctCount > 4 {
-				fmt.Println("invalid team size")
-				break
-			}
-
-			if !(isCT || isTR) {
-				fmt.Println("invalid team")
-				break
-			}
-
-			if isCT {
-				playerBasePos = 5*lenPerPlayer + ctCount*lenPerPlayer
-				ctCount++
-			} else if isTR {
-				playerBasePos = tCount * lenPerPlayer
-				tCount++
-			}
+			playerBasePos = lenPerPlayer * allPlayers[userID].playerSeqID
 
 			for i, info := range playerInfo {
 				newCSVRow[playerBasePos+i] = info
@@ -469,70 +561,81 @@ func processPlayerInformation(fullMap *utils.AnnotatedMap,
 	return newCSVRow, newHeader
 }
 
-func processOtherGameInfo(gs dem.GameState, fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, bombPlanted bool, currentRoundTime float64,
-	smokeList []events.GrenadeEvent, incendiaryList []events.GrenadeEvent) (newCSVRow []string, header []string) {
-	newCSVRow = []string{"0"}
+func processOtherGameInfo(gs dem.GameState, fullMap *utils.AnnotatedMap, mapMetadata metadata.Map, bombPlanted bool, bombTimeticking float64,
+	bomb *common.Bomb, currentRoundTime float64, allHandlers []CompositeEventHandler) (newCSVRow []string, header []string) {
+	newCSVRow = []string{"0", "0"}
+	bombPosition := gs.Bomb().Position()
+	var icon string
+	x, y := mapMetadata.TranslateScale(bombPosition.X, bombPosition.Y)
 	if bombPlanted {
-		bombPosition := gs.Bomb().Position()
-		x, y := mapMetadata.TranslateScale(bombPosition.X, bombPosition.Y)
-		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "bomb_planted"}
-		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+		icon = "bomb_planted"
+	} else if bomb.Carrier == nil {
+		icon = "bomb_dropped"
+	} else {
+		icon = "c4_carrier"
 	}
+	newIcon := utils.Icon{X: x, Y: y, IconName: icon}
+	(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
 
-	processGrenadesPositions(fullMap, mapMetadata, smokeList, incendiaryList)
+	grenadeIcons, _ := allHandlers[0].GetIcons()
+	(*fullMap).IconsList = append((*fullMap).IconsList, grenadeIcons...)
 
 	newCSVRow[0] = strconv.FormatFloat(currentRoundTime, 'f', -1, 32)
-	header = []string{"round_time"}
+	newCSVRow[1] = strconv.FormatFloat(bombTimeticking, 'f', -1, 32)
+	header = []string{"round_time", "bomb_timeticking"}
 	return newCSVRow, header
 }
 
 func processFrameEnd(gs dem.GameState, mapName string, p dem.Parser, mapMetadata metadata.Map, imageIndex *int,
-	roundDir string, snapshotCollectionSize *int, roundCSVPath string, isNewRound *bool, bombPlanted bool, smokeList []events.GrenadeEvent,
-	incendiaryList []events.GrenadeEvent) {
+	roundDir string, snapshotCollectionSize *int, roundCSVPath string, isNewRound *bool, bombPlanted bool, bombStart float64,
+	imgSize int, currentRoundTime float64, allHandlers []CompositeEventHandler) {
 
-	currentRoundTime := getRoundTime(p)
-	if (currentRoundTime - lastUpdate) > updateInterval {
-		lastUpdate = currentRoundTime
+	bombTimeticking := 0.0
+	writeData := [][]string{}
+	fullMap := utils.AnnotatedMap{IconsList: nil, SourceMap: mapName}
+	newCSVRow := []string{}
+	newHeader := []string{}
 
-		writeData := [][]string{}
-		fullMap := utils.AnnotatedMap{IconsList: nil, SourceMap: mapName}
-		newCSVRow := []string{}
-		newHeader := []string{}
-		tempCSV, tempHeader := processPlayerInformation(&fullMap, mapMetadata, allPlayers)
-		newCSVRow = append(newCSVRow, tempCSV...)
-		newHeader = append(newHeader, tempHeader...)
-		tempCSV, tempHeader = processOtherGameInfo(gs, &fullMap, mapMetadata, bombPlanted, currentRoundTime, smokeList, incendiaryList)
-		newCSVRow = append(newCSVRow, tempCSV...)
-		newHeader = append(newHeader, tempHeader...)
-		generateMap(&fullMap, roundDir, imageIndex)
+	if bombPlanted {
+		bombTimeticking = currentRoundTime - bombStart
+	}
+	bomb := gs.Bomb()
+	tempCSV, tempHeader := processOtherGameInfo(gs, &fullMap, mapMetadata, bombPlanted, bombTimeticking, bomb, currentRoundTime, allHandlers)
+	newCSVRow = append(newCSVRow, tempCSV...)
+	newHeader = append(newHeader, tempHeader...)
 
-		if *isNewRound {
-			writeData = append(writeData, newHeader)
-			writeData = append(writeData, newCSVRow)
-			writeToCSV(writeData, roundCSVPath)
-			*isNewRound = false
-		} else {
-			writeData = append(writeData, newCSVRow)
-			writeToCSV(writeData, roundCSVPath)
-		}
+	tempCSV, tempHeader = processPlayerInformation(&fullMap, mapMetadata, allPlayers)
 
-		*snapshotCollectionSize++
+	newCSVRow = append(newCSVRow, tempCSV...)
+	newHeader = append(newHeader, tempHeader...)
+	generateMap(&fullMap, roundDir, imageIndex, imgSize)
+
+	if *isNewRound {
+		writeData = append(writeData, newHeader)
+		writeData = append(writeData, newCSVRow)
+		writeToCSV(writeData, roundCSVPath)
+		*isNewRound = false
+	} else {
+		writeData = append(writeData, newCSVRow)
+		writeToCSV(writeData, roundCSVPath)
 	}
 
+	*snapshotCollectionSize++
+
 }
 
-func getRoundTime(p dem.Parser) float64 {
-	return getCurrentTime(p) - roundStartTime
+func getRoundTime(p dem.Parser, roundStartTime float64, tickRate int) float64 {
+	return getCurrentTime(p, tickRate) - roundStartTime
 }
 
-func getCurrentTime(p dem.Parser) float64 {
+func getCurrentTime(p dem.Parser, tickRate int) float64 {
 	currentFrame := p.CurrentFrame()
 	return float64(currentFrame) / float64(tickRate)
 }
 
-func generateMap(fullMap *utils.AnnotatedMap, roundDir string, imageIndex *int) {
+func generateMap(fullMap *utils.AnnotatedMap, roundDir string, imageIndex *int, imgSize int) {
 	img_original := utils.DrawMap(*fullMap)
-	img := resize.Resize(800, 0, img_original, resize.Bilinear)
+	img := resize.Resize(uint(imgSize), 0, img_original, resize.Bilinear)
 	third, err := os.Create(roundDir + "/output_map" +
 		utils.PadLeft(strconv.Itoa(*imageIndex), "0", 2) + ".jpg")
 	if err != nil {
@@ -549,13 +652,13 @@ func processGrenadesPositions(fullMap *utils.AnnotatedMap, mapMetadata metadata.
 
 	for _, incendiary := range incendiaryList {
 		x, y := mapMetadata.TranslateScale(incendiary.Position.X, incendiary.Position.Y)
-		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "incendiary"}
+		newIcon := utils.Icon{X: x, Y: y, IconName: "incendiary"}
 		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
 	}
 	//add smoke icons
 	for _, smoke := range smokeList {
 		x, y := mapMetadata.TranslateScale(smoke.Position.X, smoke.Position.Y)
-		newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: "smoke"}
+		newIcon := utils.Icon{X: x, Y: y, IconName: "smoke"}
 		(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
 	}
 }
@@ -564,41 +667,33 @@ func processPlayerPositions(allPlayers map[int]*playerMapping, fullMap *utils.An
 	mapMetadata metadata.Map, sortedUserIDs []int) {
 
 	//add players icons
-	tCount := 0
-	ctCount := 0
+
 	playerCount := 0
 	for _, userID := range sortedUserIDs {
 		if _, ok := allPlayers[userID]; ok {
 			player := allPlayers[userID].playerObject
+			playerIndex := allPlayers[userID].playerSeqID
 
-			isCT := (player.Team == 3)
-			isTR := (player.Team == 2)
+			if player.Health() > 0 {
+				x, y := mapMetadata.TranslateScale(player.Position().X, player.Position().Y)
+				var icon string
+				playerCount = (playerIndex % 5) + 1
+				if playerIndex/5 == 0 { //terrorist
+					icon = "terrorist_"
 
-			if !isCT && tCount > 4 || isCT && ctCount > 4 {
-				fmt.Println("invalid team size")
-				break
+				} else {
+					icon = "ct_"
+					if player.HasDefuseKit() {
+						newIcon := utils.Icon{X: x, Y: y, IconName: "kit"} //t or ct icon
+						(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+					}
+				}
+				newIcon := utils.Icon{X: x, Y: y, IconName: icon + strconv.Itoa(playerCount), Rotate: float64(player.ViewDirectionX())} //t or ct icon
+				(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
+				newIcon = utils.Icon{X: x, Y: y, IconName: strconv.Itoa(playerCount)}
+				(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
 			}
 
-			if !(isCT || isTR) {
-				fmt.Println("invalid team")
-				break
-			}
-
-			x, y := mapMetadata.TranslateScale(player.Position().X, player.Position().Y)
-			var icon string
-			if isTR { //terrorist
-				icon = "terrorist_1"
-				tCount++
-				playerCount = tCount
-			} else if isCT {
-				icon = "ct_1"
-				ctCount++
-				playerCount = ctCount
-			}
-			newIcon := utils.Icon{X: x - 10, Y: y - 10, IconName: icon} //t or ct icon
-			(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
-			newIcon = utils.Icon{X: x - 10, Y: y - 10, IconName: strconv.Itoa(playerCount)}
-			(*fullMap).IconsList = append((*fullMap).IconsList, newIcon)
 		} else {
 			fmt.Println("key not found", userID)
 		}
