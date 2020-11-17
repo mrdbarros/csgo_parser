@@ -65,10 +65,9 @@ type Icon struct {
 	Rotate   float64
 }
 
-//AnnotatedMap is a mapName with iconlist
-type AnnotatedMap struct {
-	IconsList []Icon
-	SourceMap string
+type MapGenerator struct {
+	mapImage   *image.NRGBA
+	iconGetter func(Icon) *(image.Image)
 }
 
 func checkError(err error) {
@@ -94,33 +93,45 @@ func iconImageGetter(iconNameToPathMap map[string]string) func(Icon) *(image.Ima
 	}
 }
 
-//DrawMap uses annotatedMap struct to generate a full image
-func DrawMap(annMap AnnotatedMap) *(image.NRGBA) {
-
-	mapPath := getMapsToImageMap()[annMap.SourceMap]
+func (mapGenerator *MapGenerator) Setup(mapName string) {
 
 	iconNameToPath := getIconNameToImageMap()
+	mapGenerator.iconGetter = iconImageGetter(iconNameToPath)
+
+	mapPath := getMapsToImageMap()[mapName]
+
 	// Load map overview image
 	fMap, err := os.Open(mapPath)
 	checkError(err)
 	imgMap, _, err := image.Decode(fMap)
 	checkError(err)
-	var imgLocation image.Rectangle
+
 	// Create output canvas and use map overview image as base
 	img := image.NewNRGBA(imgMap.Bounds())
 	draw.Draw(img, imgMap.Bounds(), imgMap, image.ZP, draw.Over)
-	iconGetter := iconImageGetter(iconNameToPath)
-	for _, icon := range annMap.IconsList {
-		iconImg := *iconGetter(icon)
+	mapGenerator.mapImage = img
+}
 
-		if icon.Rotate != 0.0 {
-			iconImg = imaging.Rotate(iconImg, icon.Rotate, color.Transparent)
+//DrawMap uses annotatedMap struct to generate a full image
+func (mapGenerator *MapGenerator) DrawMap(iconLists [][]Icon) []*(image.NRGBA) {
+	var imgLocation image.Rectangle
+	var baseImage *image.NRGBA
+	var roundImages []*image.NRGBA
+	for _, iconList := range iconLists {
+		*baseImage = *(mapGenerator.mapImage)
+		for _, icon := range iconList {
+			iconImg := *mapGenerator.iconGetter(icon)
 
+			if icon.Rotate != 0.0 {
+				iconImg = imaging.Rotate(iconImg, icon.Rotate, color.Transparent)
+
+			}
+			offset := image.Pt(int(icon.X)-iconImg.Bounds().Max.X/2, int(icon.Y)-iconImg.Bounds().Max.Y/2)
+			imgLocation = iconImg.Bounds().Add(offset)
+			draw.Draw(baseImage, imgLocation, iconImg, image.ZP, draw.Over)
 		}
-		offset := image.Pt(int(icon.X)-iconImg.Bounds().Max.X/2, int(icon.Y)-iconImg.Bounds().Max.Y/2)
-		imgLocation = iconImg.Bounds().Add(offset)
-		draw.Draw(img, imgLocation, iconImg, image.ZP, draw.Over)
+		roundImages = append(roundImages, baseImage)
 	}
 
-	return img
+	return roundImages
 }
