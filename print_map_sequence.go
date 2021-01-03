@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"image/jpeg"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -22,54 +21,291 @@ import (
 	"github.com/nfnt/resize"
 )
 
+//struct to gather player related data
 type playerMapping struct {
 	playerObject *common.Player
 }
 
+//generic event handler registering interface
 type CompositeEventHandler interface {
-	Register() error
-	Unregister() error
-	SetConfig(parser *dem.Parser, tickRate int, mapMetadata metadata.Map) error
+	Register(*basicHandler) error
+	//Unregister() error
 }
 
+//IconGenerators generate icons on output map
 type IconGenerator interface {
 	GetIcons() ([]utils.Icon, error)
 }
 
+//TabularGenerators generate data rows on output file
 type TabularGenerator interface {
 	GetTabularData() ([]string, []string, error) //header, data, error
 }
 
+//StatGenerators generate rows on output stat file
 type StatGenerator interface {
 	GetStatistics() ([]string, []string, error) //header, data, error
 }
 
+//Interface to RoundStart event subscribers
+type RoundStartSubscriber interface {
+	RoundStartHandler(events.RoundStart)
+}
+
+//Interface to RoundEnd event subscribers
+type RoundEndSubscriber interface {
+	RoundEndHandler(events.RoundEnd)
+}
+
+//Interface to GrenadeEventIf event subscribers
+type GrenadeEventIfSubscriber interface {
+	CompositeEventHandler
+	GrenadeEventIfHandler(events.GrenadeEventIf)
+}
+
+//Interface to RoundFreezetimeEnd event subscribers
+type RoundFreezetimeEndSubscriber interface {
+	RoundFreezetimeEndHandler(events.RoundFreezetimeEnd)
+}
+
+//Interface to BombPlanted event subscribers
+type BombPlantedSubscriber interface {
+	BombPlantedHandler(events.BombPlanted)
+}
+
+//Interface to FrameDone event subscribers
+type FrameDoneSubscriber interface {
+	FrameDoneHandler(events.FrameDone)
+}
+
+//basic shared handler for parsing
 type basicHandler struct {
-	parser           *dem.Parser
-	tickRate         int
-	mapMetadata      metadata.Map
+	parser      *dem.Parser
+	tickRate    int
+	mapMetadata metadata.Map
+
+	roundStartHandlerID   dp.HandlerIdentifier
+	roundStartSubscribers []RoundStartSubscriber
+
+	roundEndHandlerID   dp.HandlerIdentifier
+	roundEndSubscribers []RoundEndSubscriber
+
+	grenadeEventIfHandlerID   dp.HandlerIdentifier
+	grenadeEventIfSubscribers []GrenadeEventIfSubscriber
+
+	roundFreezeTimeEndHandlerID   dp.HandlerIdentifier
+	roundFreezeTimeEndSubscribers []RoundFreezetimeEndSubscriber
+
+	bombPlantedHandlerID   dp.HandlerIdentifier
+	bombPlantedSubscribers []BombPlantedSubscriber
+
+	frameDoneHandlerID   dp.HandlerIdentifier
+	frameDoneSubscribers []FrameDoneSubscriber
+
 	roundStartTime   float64
-	rootPath         string
+	rootMatchPath    string
 	roundDirPath     string
 	roundWinner      string
 	roundTabularPath string
 	roundStatPath    string
+	currentTime      float64
 	roundNumber      int
+	frameGroup       int
+	isMatchStarted   bool
+	roundFreezeTime  bool
+}
+
+func (bh *basicHandler) RegisterBasicEvents() error {
+	parser := *(bh.parser)
+	bh.roundStartHandlerID = parser.RegisterEventHandler(bh.RoundStartHandler)
+	bh.roundEndHandlerID = parser.RegisterEventHandler(bh.RoundEndHandler)
+	bh.roundFreezeTimeEndHandlerID = parser.RegisterEventHandler(bh.RoundFreezetimeEndHandler)
+	return nil
+}
+
+func (bh *basicHandler) Setup(parser *dem.Parser, tickRate int, mapMetadata metadata.Map, rootMatchPath string) error {
+	bh.parser = parser
+	bh.tickRate = tickRate
+	bh.mapMetadata = mapMetadata
+	bh.rootMatchPath = rootMatchPath
+	bh.roundDirPath = rootMatchPath
+	return nil
+}
+
+func (bh *basicHandler) UpdateTime() {
+	bh.currentTime = getCurrentTime(*(bh.parser), bh.tickRate)
+}
+
+func (bh *basicHandler) GetTabularData() ([]string, []string, error) {
+	parser := *(bh.parser)
+	newCSVRow := []string{"0"}
+	currentRoundTime := getCurrentTime(parser, bh.tickRate)
+
+	newCSVRow[0] = strconv.FormatFloat(currentRoundTime-bh.roundStartTime, 'f', -1, 32)
+	header := []string{"round_time"}
+	return header, newCSVRow, nil
+
+}
+
+func (bh *basicHandler) RegisterRoundStartSubscriber(rs RoundStartSubscriber) {
+	parser := *(bh.parser)
+	if bh.roundStartHandlerID == nil {
+		bh.roundStartHandlerID = parser.RegisterEventHandler(bh.RoundStartHandler)
+	}
+
+	bh.roundStartSubscribers = append(bh.roundStartSubscribers, rs)
+
+}
+
+func (bh *basicHandler) RoundStartHandler(e events.RoundStart) {
+	bh.UpdateTime()
+	parser := *(bh.parser)
+	gs := parser.GameState()
+
+	bh.roundFreezeTime = true
+	bh.roundWinner = ""
+	bh.frameGroup = 0
+	bh.isMatchStarted = true
+	bh.roundNumber = gs.TeamCounterTerrorists().Score() + gs.TeamTerrorists().Score() + 1
+	newScore := utils.PadLeft(strconv.Itoa(bh.roundNumber), "0", 2) + "_ct_" +
+		utils.PadLeft(strconv.Itoa(gs.TeamCounterTerrorists().Score()), "0", 2) +
+		"_t_" + utils.PadLeft(strconv.Itoa(gs.TeamTerrorists().Score()), "0", 2)
+
+	bh.roundDirPath = bh.rootMatchPath + "/" + newScore
+	bh.roundStartTime = bh.currentTime
+
+	for _, subscriber := range bh.roundStartSubscribers {
+		subscriber.RoundStartHandler(e)
+	}
+
+}
+
+func (bh *basicHandler) RegisterRoundEndSubscriber(rs RoundEndSubscriber) {
+	parser := *(bh.parser)
+	if bh.roundEndHandlerID == nil {
+		bh.roundEndHandlerID = parser.RegisterEventHandler(bh.RoundEndHandler)
+	}
+
+	bh.roundEndSubscribers = append(bh.roundEndSubscribers, rs)
+
+}
+
+func (bh *basicHandler) RoundEndHandler(e events.RoundEnd) {
+	bh.UpdateTime()
+	winTeam := e.Winner
+	if winTeam == 2 {
+		bh.roundWinner = "t"
+	} else if winTeam == 3 {
+		bh.roundWinner = "ct"
+	} else {
+		bh.roundWinner = "invalid"
+	}
+	if bh.roundDirPath != bh.rootMatchPath {
+		fileWrite, err := os.Create(bh.roundDirPath + "/winner.txt")
+		checkError(err)
+		defer fileWrite.Close()
+		_, err = fileWrite.WriteString(bh.roundWinner)
+		checkError(err)
+
+	}
+
+	for _, subscriber := range bh.roundEndSubscribers {
+		subscriber.RoundEndHandler(e)
+	}
+
+}
+
+func (bh *basicHandler) RegisterGrenadeEventIfSubscriber(rs GrenadeEventIfSubscriber) {
+	parser := *(bh.parser)
+	if bh.grenadeEventIfHandlerID == nil {
+		bh.grenadeEventIfHandlerID = parser.RegisterEventHandler(bh.GrenadeEventIfHandler)
+	}
+
+	bh.grenadeEventIfSubscribers = append(bh.grenadeEventIfSubscribers, rs)
+
+}
+
+func (bh *basicHandler) GrenadeEventIfHandler(e events.GrenadeEventIf) {
+	bh.UpdateTime()
+	for _, subscriber := range bh.grenadeEventIfSubscribers {
+		subscriber.GrenadeEventIfHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterRoundFreezetimeEndSubscriber(rs RoundFreezetimeEndSubscriber) {
+	parser := *(bh.parser)
+	if bh.roundFreezeTimeEndHandlerID == nil {
+		bh.roundFreezeTimeEndHandlerID = parser.RegisterEventHandler(bh.RoundFreezetimeEndHandler)
+	}
+
+	bh.roundFreezeTimeEndSubscribers = append(bh.roundFreezeTimeEndSubscribers, rs)
+
+}
+
+func (bh *basicHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
+	bh.UpdateTime()
+	bh.roundFreezeTime = false
+
+	for _, subscriber := range bh.roundFreezeTimeEndSubscribers {
+		subscriber.RoundFreezetimeEndHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterBombPlantedSubscriber(rs BombPlantedSubscriber) {
+	parser := *(bh.parser)
+	if bh.bombPlantedHandlerID == nil {
+		bh.bombPlantedHandlerID = parser.RegisterEventHandler(bh.BombPlantedHandler)
+	}
+
+	bh.bombPlantedSubscribers = append(bh.bombPlantedSubscribers, rs)
+
+}
+
+func (bh *basicHandler) BombPlantedHandler(e events.BombPlanted) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.bombPlantedSubscribers {
+		subscriber.BombPlantedHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterFrameDoneSubscriber(rs FrameDoneSubscriber) {
+	parser := *(bh.parser)
+	if bh.frameDoneHandlerID == nil {
+		bh.frameDoneHandlerID = parser.RegisterEventHandler(bh.FrameDoneHandler)
+	}
+
+	bh.frameDoneSubscribers = append(bh.frameDoneSubscribers, rs)
+
+}
+
+func (bh *basicHandler) FrameDoneHandler(e events.FrameDone) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.frameDoneSubscribers {
+		subscriber.FrameDoneHandler(e)
+	}
 }
 
 type poppingGrenadeHandler struct {
-	basicHandler          *basicHandler
-	activeGrenades        []*grenadeTracker
-	grenadeStartHandlerID dp.HandlerIdentifier
-	baseIcons             map[common.EquipmentType]utils.Icon
+	basicHandler   *basicHandler
+	activeGrenades []*grenadeTracker
+	baseIcons      map[common.EquipmentType]utils.Icon
 }
 
-type poppingGrenadeManager struct {
-	popHandler *poppingGrenadeHandler
+func (ph *poppingGrenadeHandler) Register(bh *basicHandler) error {
+	ph.basicHandler = bh
+	bh.RegisterGrenadeEventIfSubscriber(interface{}(ph).(GrenadeEventIfSubscriber))
+	bh.RegisterRoundStartSubscriber(interface{}(ph).(RoundStartSubscriber))
+	return nil
+}
+
+func (ph *poppingGrenadeHandler) RoundStartHandler(e events.RoundStart) {
+	ph.activeGrenades = nil
 }
 
 //e holds smoke start/expired or inferno start/expired and other grenade events
-func (ph *poppingGrenadeHandler) GrenadeStartHandler(e events.GrenadeEventIf) {
+func (ph *poppingGrenadeHandler) GrenadeEventIfHandler(e events.GrenadeEventIf) {
 
 	// if molly, incgrenade or smoke
 	if e.Base().GrenadeType == common.EqSmoke || e.Base().GrenadeType == common.EqIncendiary || e.Base().GrenadeType == common.EqMolotov {
@@ -97,36 +333,22 @@ func (ph *poppingGrenadeHandler) IsTracked(entityID int) bool {
 	return false
 }
 
-func (ph *poppingGrenadeHandler) Register() error {
-	parser := *(ph.basicHandler.parser)
-	ph.grenadeStartHandlerID = parser.RegisterEventHandler(ph.GrenadeStartHandler)
-	return nil
-}
+// func (ph *poppingGrenadeHandler) Unregister() error {
+// 	parser := *(ph.basicHandler.parser)
+// 	parser.UnregisterEventHandler(ph.grenadeStartHandlerID)
+// 	return nil
 
-func (ph *poppingGrenadeHandler) Unregister() error {
-	parser := *(ph.basicHandler.parser)
-	parser.UnregisterEventHandler(ph.grenadeStartHandlerID)
-	return nil
+// }
 
-}
-
-func (ph poppingGrenadeManager) GetIcons() ([]utils.Icon, error) {
+func (ph *poppingGrenadeHandler) GetIcons() ([]utils.Icon, error) {
 	var iconList []utils.Icon
-	popHandler := ph.popHandler
-	for _, activeGrenade := range popHandler.activeGrenades {
-		newIcon := popHandler.baseIcons[activeGrenade.grenadeEvent.GrenadeType]
-		x, y := popHandler.basicHandler.mapMetadata.TranslateScale(activeGrenade.grenadeEvent.Position.X, activeGrenade.grenadeEvent.Position.Y)
+	for _, activeGrenade := range ph.activeGrenades {
+		newIcon := ph.baseIcons[activeGrenade.grenadeEvent.GrenadeType]
+		x, y := ph.basicHandler.mapMetadata.TranslateScale(activeGrenade.grenadeEvent.Position.X, activeGrenade.grenadeEvent.Position.Y)
 		newIcon.X, newIcon.Y = x, y
 		iconList = append(iconList, newIcon)
 	}
 	return iconList, nil
-}
-
-func (bh *basicHandler) SetConfig(parser *dem.Parser, tickRate int, mapMetadata metadata.Map) error {
-	bh.parser = parser
-	bh.tickRate = tickRate
-	bh.mapMetadata = mapMetadata
-	return nil
 }
 
 func (ph *poppingGrenadeHandler) RemoveGrenade(entityID int) {
@@ -157,36 +379,15 @@ func (ph *poppingGrenadeHandler) SetBaseIcons() {
 // 	baseIcons            map[string]utils.Icon
 // }
 
-type gameStateInfoManager struct {
-	basicHandler *basicHandler
-}
-
-func (gm gameStateInfoManager) GetTabularData() ([]string, []string, error) {
-	parser := *(gm.basicHandler.parser)
-	gs := parser.GameState()
-	newCSVRow := []string{"0"}
-	currentRoundTime := getCurrentTime(parser, gm.basicHandler.tickRate)
-
-	newCSVRow[0] = strconv.FormatFloat(currentRoundTime-gm.basicHandler.roundStartTime, 'f', -1, 32)
-	header := []string{"round_time"}
-	return newCSVRow, header, nil
-
-}
-
 type playerInfoHandler struct {
-	basicHandler        *basicHandler
-	playerMappings      map[int]*playerMapping
-	sortedUserIDs       []int
-	roundStartHandlerID dp.HandlerIdentifier
+	basicHandler   *basicHandler
+	playerMappings map[int]*playerMapping
+	sortedUserIDs  []int
 }
 
-type playerInfoManager struct {
-	playerInfoHandler *playerInfoHandler
-}
-
-func (ph *playerInfoHandler) Register() error {
-	parser := *(ph.basicHandler.parser)
-	ph.roundStartHandlerID = parser.RegisterEventHandler(ph.RoundStartHandler)
+func (ph *playerInfoHandler) Register(bh *basicHandler) error {
+	ph.basicHandler = bh
+	bh.RegisterRoundStartSubscriber(interface{}(ph).(RoundStartSubscriber))
 	return nil
 }
 
@@ -211,17 +412,19 @@ func (ph *playerInfoHandler) processPlayerPositions() (iconList []utils.Icon) {
 				var icon string
 
 				if isCT {
-					playerCount = 5 + ctCount
+
 					icon = "ct_"
 					if player.HasDefuseKit() {
 						newIcon := utils.Icon{X: x, Y: y, IconName: "kit"} //t or ct icon
 						iconList = append(iconList, newIcon)
 					}
 					ctCount++
+					playerCount = ctCount
 				} else if isTR {
 					icon = "terrorist_"
-					playerCount = tCount
+
 					tCount++
+					playerCount = tCount
 				}
 
 				newIcon := utils.Icon{X: x, Y: y, IconName: icon + strconv.Itoa(playerCount), Rotate: float64(player.ViewDirectionX())} //t or ct icon
@@ -257,7 +460,6 @@ func (ph playerInfoHandler) processPlayerWeapons() (newCSVRow []string, header [
 	playerBasePos := 0
 	ctCount := 0
 	tCount := 0
-	playerCount := 0
 	for _, userID := range ph.sortedUserIDs {
 		if playerMap, ok := allPlayers[userID]; ok {
 			player := playerMap.playerObject
@@ -345,37 +547,35 @@ func (ph *playerInfoHandler) getPlayersHPAndFlashtime() (newCSVRow []string, hea
 	return newCSVRow[:], header
 }
 
-func (pm playerInfoManager) GetTabularData() (newHeader []string, newCSVRow []string, err error) {
+func (ph *playerInfoHandler) GetTabularData() (newHeader []string, newCSVRow []string, err error) {
 
-	tempCSV, tempHeader := pm.playerInfoHandler.getPlayersHPAndFlashtime()
+	tempCSV, tempHeader := ph.getPlayersHPAndFlashtime()
 	newCSVRow = append(newCSVRow, tempCSV...)
 	newHeader = append(newHeader, tempHeader...)
 
-	tempCSV, tempHeader = pm.playerInfoHandler.processPlayerWeapons()
+	tempCSV, tempHeader = ph.processPlayerWeapons()
 	newCSVRow = append(newCSVRow, tempCSV...)
 	newHeader = append(newHeader, tempHeader...)
 	return newHeader, newCSVRow, err
 }
 
-func (pm playerInfoManager) GetIcons() ([]utils.Icon, error) {
+func (ph *playerInfoHandler) GetIcons() ([]utils.Icon, error) {
 
-	return pm.playerInfoHandler.processPlayerPositions(), nil
+	return ph.processPlayerPositions(), nil
 
 }
 
 type bombHandler struct {
-	basicHandler         *basicHandler
-	bombPlanted          bool
-	bombPlantedTime      float64
-	bombPlantedHandlerID dp.HandlerIdentifier
-	roundStartHandlerID  dp.HandlerIdentifier
-	baseIcons            map[string]utils.Icon
+	basicHandler    *basicHandler
+	bombPlanted     bool
+	bombPlantedTime float64
+	baseIcons       map[string]utils.Icon
 }
 
-func (bh *bombHandler) Register() error {
-	parser := *(bh.basicHandler.parser)
-	bh.bombPlantedHandlerID = parser.RegisterEventHandler(bh.BombPlantedHandler)
-	bh.roundStartHandlerID = parser.RegisterEventHandler(bh.RoundStartHandler)
+func (bmbh *bombHandler) Register(bh *basicHandler) error {
+	bmbh.basicHandler = bh
+	bh.RegisterBombPlantedSubscriber(interface{}(bmbh).(BombPlantedSubscriber))
+	bh.RegisterRoundStartSubscriber(interface{}(bmbh).(RoundStartSubscriber))
 	return nil
 }
 
@@ -392,12 +592,7 @@ func (bh *bombHandler) RoundStartHandler(e events.RoundStart) {
 
 }
 
-type bombManager struct {
-	bmbHandler *bombHandler
-}
-
-func (bm bombManager) GetIcons() (icons []utils.Icon, err error) {
-	bh := bm.bmbHandler
+func (bh *bombHandler) GetIcons() (icons []utils.Icon, err error) {
 	parser := (*bh.basicHandler.parser)
 	bomb := parser.GameState().Bomb()
 	var icon string
@@ -414,16 +609,14 @@ func (bm bombManager) GetIcons() (icons []utils.Icon, err error) {
 	return icons, nil
 }
 
-func (bm bombManager) GetTabularData() ([]string, []string, error) {
+func (bh *bombHandler) GetTabularData() ([]string, []string, error) {
 	newCSVRow := []string{"0"}
-	if bm.bmbHandler.bombPlanted {
-		parser := (*bm.bmbHandler.basicHandler.parser)
-		currentTime := getCurrentTime(parser, bm.bmbHandler.basicHandler.tickRate)
-		newCSVRow[0] = strconv.FormatFloat(currentTime-bm.bmbHandler.bombPlantedTime, 'f', -1, 32)
+	if bh.bombPlanted {
+		newCSVRow[0] = strconv.FormatFloat(bh.basicHandler.currentTime-bh.bombPlantedTime, 'f', -1, 32)
 	}
 
 	header := []string{"bomb_timeticking"}
-	return newCSVRow, header, nil
+	return header, newCSVRow, nil
 }
 
 type grenadeTracker struct {
@@ -431,52 +624,8 @@ type grenadeTracker struct {
 	grenadeTime  float64
 }
 
-type roundWinnerHandler struct {
-	basicHandler        *basicHandler
-	roundStartHandlerID dp.HandlerIdentifier
-	roundEndHandlerID   dp.HandlerIdentifier
-}
-
-type roundWinnerManager struct {
-	roundWinnerHandler *infoGenerationHandler
-}
-
-func (rh *roundWinnerHandler) Register() error {
-	parser := *(rh.basicHandler.parser)
-	rh.roundStartHandlerID = parser.RegisterEventHandler(rh.RoundStartHandler)
-	rh.roundEndHandlerID = parser.RegisterEventHandler(rh.RoundEndHandler)
-	return nil
-}
-
-func (rh *roundWinnerHandler) RoundStartHandler(e events.RoundStart) {
-
-	rh.basicHandler.roundWinner = ""
-
-}
-
-func (rh *roundWinnerHandler) RoundEndHandler(e events.RoundEnd) {
-
-	winTeam := e.Winner
-	if winTeam == 2 {
-		rh.basicHandler.roundWinner = "t"
-	} else if winTeam == 3 {
-		rh.basicHandler.roundWinner = "ct"
-	} else {
-		rh.basicHandler.roundWinner = "invalid"
-	}
-	if rh.basicHandler.roundDirPath != rh.basicHandler.rootPath {
-		fileWrite, err := os.Create(rh.basicHandler.roundDirPath + "/winner.txt")
-		checkError(err)
-		defer fileWrite.Close()
-		_, err = fileWrite.WriteString(rh.basicHandler.roundWinner)
-		checkError(err)
-
-	}
-
-}
-
 type matchData struct {
-	matchIcons       [][][]utils.Icon
+	matchIcons       [][][]utils.Icon //dimensions: rounds x frames x icons
 	matchTabularData [][][]string
 	matchStatistics  [][][]string
 }
@@ -493,41 +642,50 @@ func (md *matchData) AddNewRound() {
 	md.matchStatistics = append(md.matchStatistics, [][]string{})
 }
 
-type infoGenerationHandler struct {
-	basicHandler                *basicHandler
-	roundStartHandlerID         dp.HandlerIdentifier
-	roundFreezetimeEndHandlerID dp.HandlerIdentifier
-	frameDoneHandlerID          dp.HandlerIdentifier
-	roundFreezeTime             bool
-	generationIndex             int
-	lastUpdate                  float64
-	isNewRound                  bool
-	updateInterval              float64
-	roundEndRegistered          bool //set to true after processing the first frame subsequent to winner callout
-	allIconGenerators           []IconGenerator
-	allTabularGenerators        []TabularGenerator
-	allStatGenerators           []StatGenerator
-	matchData                   *matchData
-	imgSize                     int
+func (md *matchData) AddNewFrameGroup(roundNumber int) {
+	if len(md.matchIcons[roundNumber]) == 0 {
+		md.matchTabularData[roundNumber] = append(md.matchTabularData[roundNumber], []string{})
+		md.matchStatistics[roundNumber] = append(md.matchStatistics[roundNumber], []string{})
+	}
+	md.matchIcons[roundNumber] = append(md.matchIcons[roundNumber], []utils.Icon{})
+	md.matchTabularData[roundNumber] = append(md.matchTabularData[roundNumber], []string{})
+	md.matchStatistics[roundNumber] = append(md.matchStatistics[roundNumber], []string{})
 }
 
-type infoGenerationManager struct {
-	infoGenerationHandler *infoGenerationHandler
+type infoGenerationHandler struct {
+	basicHandler         *basicHandler
+	frameDoneHandlerID   dp.HandlerIdentifier
+	generationIndex      int
+	lastUpdate           float64
+	isNewRound           bool
+	updateInterval       float64
+	roundEndRegistered   bool //set to true after processing the first frame subsequent to winner callout
+	allIconGenerators    *[]IconGenerator
+	allTabularGenerators *[]TabularGenerator
+	allStatGenerators    *[]StatGenerator
+	mapGenerator         utils.MapGenerator
+	matchData            *matchData
+	imgSize              int
 }
+
+func (ih *infoGenerationHandler) Register(bh *basicHandler) error {
+	ih.basicHandler = bh
+	bh.RegisterRoundStartSubscriber(interface{}(ih).(RoundStartSubscriber))
+	bh.RegisterFrameDoneSubscriber(interface{}(ih).(FrameDoneSubscriber))
+	return nil
+}
+
+// func (ih *infoGenerationHandler) Unregister(bh *basicHandler) error {
+// 	ih.basicHandler = bh
+// 	bh.RegisterCompositeEventHandler(interface{}(ih).(CompositeEventHandler))
+// 	return nil
+// }
 
 func (ih *infoGenerationHandler) RoundStartHandler(e events.RoundStart) {
-	parser := *(ih.basicHandler.parser)
-	gs := parser.GameState()
-	ih.roundFreezeTime = true
 
-	ih.basicHandler.roundNumber = gs.TeamCounterTerrorists().Score() + gs.TeamTerrorists().Score() + 1
-	newScore := utils.PadLeft(strconv.Itoa(ih.basicHandler.roundNumber), "0", 2) + "_ct_" +
-		utils.PadLeft(strconv.Itoa(gs.TeamCounterTerrorists().Score()), "0", 2) +
-		"_t_" + utils.PadLeft(strconv.Itoa(gs.TeamTerrorists().Score()), "0", 2)
-
-	ih.basicHandler.roundDirPath = ih.basicHandler.rootPath + "/" + newScore
 	dirExists, _ := exists(ih.basicHandler.roundDirPath)
 	ih.generationIndex = 0
+	ih.roundEndRegistered = false
 	if !dirExists {
 		err := os.MkdirAll(ih.basicHandler.roundDirPath, 0700)
 		checkError(err)
@@ -540,11 +698,11 @@ func (ih *infoGenerationHandler) RoundStartHandler(e events.RoundStart) {
 	checkError(err)
 	defer roundCSV.Close()
 
-	ih.basicHandler.roundStartTime = getCurrentTime(parser, ih.basicHandler.tickRate)
 	ih.lastUpdate = 0.0
 
 	if len(ih.matchData.matchIcons) > ih.basicHandler.roundNumber-1 { // match restart or round rollback
-		ih.matchData.CropData(ih.basicHandler.roundNumber)
+		ih.matchData.CropData(ih.basicHandler.roundNumber - 1)
+		ih.matchData.AddNewRound()
 	} else if len(ih.matchData.matchIcons) < ih.basicHandler.roundNumber-1 {
 		fmt.Println("missing match data")
 	} else {
@@ -553,16 +711,12 @@ func (ih *infoGenerationHandler) RoundStartHandler(e events.RoundStart) {
 
 }
 
-func (ih *infoGenerationHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
-	ih.roundFreezeTime = false
-}
-
 func (ih *infoGenerationHandler) FrameDoneHandler(e events.FrameDone) {
 
 	if ih.isReadyForProcessing() {
 		ih.processFrameEnd()
 		if ih.basicHandler.roundWinner != "" {
-			generateMap(ih.matchData.matchIcons[ih.basicHandler.roundNumber-1],
+			generateRoundMaps(ih.mapGenerator, ih.matchData.matchIcons[ih.basicHandler.roundNumber-1],
 				ih.basicHandler.roundDirPath, ih.imgSize)
 			writeToCSV(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1],
 				ih.basicHandler.roundTabularPath)
@@ -575,10 +729,9 @@ func (ih *infoGenerationHandler) isReadyForProcessing() bool {
 	parser := *(ih.basicHandler.parser)
 	gs := parser.GameState()
 	currentRoundTime := getRoundTime(parser, ih.basicHandler.roundStartTime, ih.basicHandler.tickRate)
-	roundDir := ih.basicHandler.roundDirPath
 	if !(gs == nil) &&
-		ih.basicHandler.roundDirPath != ih.basicHandler.rootPath &&
-		!ih.roundFreezeTime && !ih.roundEndRegistered &&
+		ih.basicHandler.isMatchStarted &&
+		!ih.basicHandler.roundFreezeTime && !ih.roundEndRegistered &&
 		(currentRoundTime-ih.lastUpdate) > ih.updateInterval {
 
 		return true
@@ -586,24 +739,32 @@ func (ih *infoGenerationHandler) isReadyForProcessing() bool {
 	return false
 }
 
-func (ih *infoGenerationHandler) Register() error {
-	parser := *(ih.basicHandler.parser)
-	ih.roundStartHandlerID = parser.RegisterEventHandler(ih.RoundStartHandler)
-	ih.roundFreezetimeEndHandlerID = parser.RegisterEventHandler(ih.RoundFreezetimeEndHandler)
-	ih.frameDoneHandlerID = parser.RegisterEventHandler(ih.FrameDoneHandler)
+func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, allIconGenerators *[]IconGenerator, allTabularGenerators *[]TabularGenerator,
+	allStatGenerators *[]StatGenerator) error {
+
+	var mapGenerator utils.MapGenerator
+	mapGenerator.Setup(ih.basicHandler.mapMetadata.Name, imgSize)
+	ih.mapGenerator = mapGenerator
+	ih.updateInterval = updateInterval
+	ih.matchData = new(matchData)
+
+	ih.allIconGenerators = allIconGenerators
+	ih.allTabularGenerators = allTabularGenerators
+	ih.allStatGenerators = allStatGenerators
+
 	return nil
 }
 
 func (ih *infoGenerationHandler) processFrameEnd() {
-	var tempIcons []utils.Icon
 	var newIcons []utils.Icon
-	for _, iconGenerator := range ih.allIconGenerators {
+	for _, iconGenerator := range *ih.allIconGenerators {
 		tempIcons, err := iconGenerator.GetIcons()
 		checkError(err)
 		newIcons = append(newIcons, tempIcons...)
 	}
-	ih.matchData.matchIcons[ih.basicHandler.roundNumber-1] =
-		append(ih.matchData.matchIcons[ih.basicHandler.roundNumber-1], newIcons)
+	ih.matchData.AddNewFrameGroup(ih.basicHandler.roundNumber - 1)
+	ih.matchData.matchIcons[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup] =
+		append(ih.matchData.matchIcons[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup], newIcons...)
 
 	var newHeaderStat []string
 	var newStat []string
@@ -612,14 +773,14 @@ func (ih *infoGenerationHandler) processFrameEnd() {
 	var tempHeader []string
 	var tempData []string
 	var err error
-	for _, statGenerator := range ih.allStatGenerators {
+	for _, statGenerator := range *ih.allStatGenerators {
 		tempHeader, tempData, err = statGenerator.GetStatistics()
 		checkError(err)
 		newHeaderStat = append(newHeaderStat, tempHeader...)
 		newStat = append(newStat, tempData...)
 	}
 
-	for _, tabularGenerator := range ih.allTabularGenerators {
+	for _, tabularGenerator := range *ih.allTabularGenerators {
 		tempHeader, tempData, err = tabularGenerator.GetTabularData()
 		checkError(err)
 		newHeaderTabular = append(newHeaderTabular, tempHeader...)
@@ -627,19 +788,22 @@ func (ih *infoGenerationHandler) processFrameEnd() {
 	}
 
 	if ih.isNewRound {
-		ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1] =
-			append(ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1], newHeaderStat)
+		ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup] =
+			append(ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup], newHeaderStat...)
 
-		ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1] =
-			append(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1], newHeaderTabular)
+		ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup] =
+			append(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup], newHeaderTabular...)
 		ih.isNewRound = false
 	}
 
-	ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1] =
-		append(ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1], newStat)
-	ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1] =
-		append(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1], newTabular)
+	ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1] =
+		append(ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1], newStat...)
+	ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1] =
+		append(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1], newTabular...)
 
+	ih.basicHandler.frameGroup = ih.basicHandler.frameGroup + 1
+	parser := *(ih.basicHandler.parser)
+	ih.lastUpdate = getRoundTime(parser, ih.basicHandler.roundStartTime, ih.basicHandler.tickRate)
 }
 
 var allPlayers = make(map[int]*playerMapping)
@@ -682,7 +846,7 @@ func RemoveContents(dir string) error {
 	return nil
 }
 
-func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
+func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	f, err := os.Open(demPath)
 	checkError(err)
 	defer func() {
@@ -693,20 +857,13 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	p := dem.NewParser(f)
 	defer f.Close()
 
-	var currentState = ""
-	var roundStartTime float64
-	var lastUpdate = 0.0
-	var updateInterval = 1.5
-	var roundCSVPath string
-
 	header, err := p.ParseHeader()
 	checkError(err)
 	fmt.Println("Map:", header.MapName)
-	mapName := header.MapName
-	dirName := destDir + "/" + header.MapName + "/" + strconv.Itoa(fileID)
-	dirExists, _ := exists(dirName)
+	rootMatchPath := destDir + "/" + header.MapName + "/" + strconv.Itoa(fileID)
+	dirExists, _ := exists(rootMatchPath)
 	if !dirExists {
-		err = os.MkdirAll(dirName, 0700)
+		err = os.MkdirAll(rootMatchPath, 0700)
 		checkError(err)
 	}
 
@@ -719,25 +876,31 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	var allTabularGenerators []TabularGenerator
 	var basicHandler basicHandler
 
-	mapGenerator.Setup(header.MapName)
+	mapGenerator.Setup(header.MapName, imgSize)
 
-	basicHandler.SetConfig(&p, tickRate, mapMetadata)
+	basicHandler.Setup(&p, tickRate, mapMetadata, rootMatchPath)
+	basicHandler.RegisterBasicEvents()
+	allTabularGenerators = append(allTabularGenerators, &basicHandler)
 
 	var popHandler poppingGrenadeHandler
-	popHandler.basicHandler = &basicHandler
 	popHandler.SetBaseIcons()
-	popHandler.Register()
-	popManager := poppingGrenadeManager{popHandler: &popHandler}
-
-	allIconGenerators = append(allIconGenerators, popManager)
+	popHandler.Register(&basicHandler)
+	allIconGenerators = append(allIconGenerators, &popHandler)
 
 	var bmbHandler bombHandler
-	bmbHandler.basicHandler = &basicHandler
-	bmbHandler.Register()
-	bombManager := bombManager{bmbHandler: &bmbHandler}
+	bmbHandler.Register(&basicHandler)
+	allTabularGenerators = append(allTabularGenerators, &bmbHandler)
+	allIconGenerators = append(allIconGenerators, &bmbHandler)
 
-	allTabularGenerators = append(allTabularGenerators, bombManager)
-	allIconGenerators = append(allIconGenerators, bombManager)
+	var playerHandler playerInfoHandler
+	playerHandler.Register(&basicHandler)
+	allTabularGenerators = append(allTabularGenerators, &playerHandler)
+	allIconGenerators = append(allIconGenerators, &playerHandler)
+
+	var infoHandler infoGenerationHandler
+	updateInterval := 2.0 //2s between framegroups
+	infoHandler.Register(&basicHandler)
+	infoHandler.Setup(imgSize, updateInterval, &allIconGenerators, &allTabularGenerators, &allStatGenerators)
 
 	err = p.ParseToEnd()
 	p.Close()
@@ -756,16 +919,21 @@ func main() {
 	tickRate, _ := strconv.Atoi(os.Args[4])
 	flag.Parse()
 	if *mode == "file" {
-		ProcessDemoFile(demPath, fileID, destDir, tickRate)
+		processDemoFile(demPath, fileID, destDir, tickRate)
 	} else if *mode == "dir" {
-		files, err := ioutil.ReadDir(demPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-		for _, f := range files {
-			ProcessDemoFile(demPath+"/"+f.Name(), fileID, destDir, tickRate)
+
+		filepath.Walk(demPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				fmt.Printf("prevent panic by handling failure accessing a path %q: %v\n", path, err)
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			processDemoFile(path, fileID, destDir, tickRate)
 			fileID++
-		}
+			return nil
+		})
 
 	} else {
 		log.Fatal("invalid mode.")
@@ -787,7 +955,6 @@ func remakePlayerMappings(gs dem.GameState) map[int]*playerMapping {
 	players := gs.Participants().Playing()
 	ctCount := 0
 	tCount := 0
-	playerIndex := 0
 	for _, player := range players {
 		isCT := (player.Team == 3)
 		isTR := (player.Team == 2)
@@ -803,10 +970,10 @@ func remakePlayerMappings(gs dem.GameState) map[int]*playerMapping {
 		}
 
 		if isCT {
-			playerIndex = 5 + ctCount
+
 			ctCount++
 		} else if isTR {
-			playerIndex = tCount
+
 			tCount++
 		}
 		newAllPlayers[player.UserID] = &playerMapping{playerObject: player}
@@ -880,23 +1047,6 @@ func fillPlayerWeapons(player *common.Player) []string {
 	return weapons
 }
 
-func processPlayerInformation(fullMap *utils.AnnotatedMap,
-	mapMetadata metadata.Map, allPlayers map[int]*playerMapping) (newCSVRow []string, newHeader []string) {
-
-	sortedUserIDs := sortPlayersByUserID(allPlayers)
-	processPlayerPositions(allPlayers, fullMap, mapMetadata, sortedUserIDs)
-
-	tempCSV, tempHeader := processPlayersHPAndFlash(allPlayers, sortedUserIDs)
-	newCSVRow = append(newCSVRow, tempCSV...)
-	newHeader = append(newHeader, tempHeader...)
-
-	tempCSV, tempHeader = processPlayerWeapons(allPlayers, sortedUserIDs)
-	newCSVRow = append(newCSVRow, tempCSV...)
-	newHeader = append(newHeader, tempHeader...)
-
-	return newCSVRow, newHeader
-}
-
 func getRoundTime(p dem.Parser, roundStartTime float64, tickRate int) float64 {
 	return getCurrentTime(p, tickRate) - roundStartTime
 }
@@ -906,13 +1056,12 @@ func getCurrentTime(p dem.Parser, tickRate int) float64 {
 	return float64(currentFrame) / float64(tickRate)
 }
 
-func generateMap(mapGenerator *utils.MapGenerator, iconLists [][]Icon, roundPath string, imgSize int) {
-	roundMaps := mapGenerator.DrawMap(iconsLists)
-	imageIndex := 0
-	for _, imgOriginal := range roundMaps {
+func generateRoundMaps(mapGenerator utils.MapGenerator, iconLists [][]utils.Icon, roundPath string, imgSize int) {
+	roundMaps := mapGenerator.DrawMap(iconLists)
+	for imageIndex, imgOriginal := range roundMaps {
 		img := resize.Resize(uint(imgSize), 0, imgOriginal, resize.Bilinear)
 		third, err := os.Create(roundPath + "/output_map" +
-			utils.PadLeft(strconv.Itoa(*imageIndex), "0", 2) + ".jpg")
+			utils.PadLeft(strconv.Itoa(imageIndex), "0", 2) + ".jpg")
 		if err != nil {
 			log.Fatalf("failed to create: %s", err)
 		}

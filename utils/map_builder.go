@@ -31,7 +31,7 @@ func getMapsToImageMap() map[string]string {
 //returns map from iconName to iconImagePath
 func getIconNameToImageMap() map[string]string {
 	return map[string]string{
-		"smoke":        "/home/marcel/projetos/data/csgo_analyze/images/icons/smoke_1.png",
+		"smoke":        "/home/marcel/projetos/data/csgo_analyze/images/icons/smoke.png",
 		"flash":        "flash",
 		"incendiary":   "/home/marcel/projetos/data/csgo_analyze/images/icons/incendiary.png",
 		"terrorist_1":  "/home/marcel/projetos/data/csgo_analyze/images/icons/t.png",
@@ -45,15 +45,15 @@ func getIconNameToImageMap() map[string]string {
 		"ct_4":         "/home/marcel/projetos/data/csgo_analyze/images/icons/ct.png",
 		"ct_5":         "/home/marcel/projetos/data/csgo_analyze/images/icons/ct.png",
 		"he":           "he",
-		"bomb_planted": "/home/marcel/projetos/data/csgo_analyze/images/icons/c4_2_planted.png",
-		"bomb_dropped": "/home/marcel/projetos/data/csgo_analyze/images/icons/c4_2.png",
-		"kit":          "/home/marcel/projetos/data/csgo_analyze/images/icons/kit.png",
+		"bomb_planted": "/home/marcel/projetos/data/csgo_analyze/images/icons/planted_c4.png",
+		"bomb_dropped": "/home/marcel/projetos/data/csgo_analyze/images/icons/dropped_c4.png",
+		"kit":          "/home/marcel/projetos/data/csgo_analyze/images/icons/kit_carrier.png",
 		"c4_carrier":   "/home/marcel/projetos/data/csgo_analyze/images/icons/c4_carrier.png",
-		"1":            "/home/marcel/projetos/data/csgo_analyze/images/icons/1_25x25.png",
-		"2":            "/home/marcel/projetos/data/csgo_analyze/images/icons/2_25x25.png",
-		"3":            "/home/marcel/projetos/data/csgo_analyze/images/icons/3_25x25.png",
-		"4":            "/home/marcel/projetos/data/csgo_analyze/images/icons/4_25x25.png",
-		"5":            "/home/marcel/projetos/data/csgo_analyze/images/icons/5_25x25.png",
+		"1":            "/home/marcel/projetos/data/csgo_analyze/images/icons/1.png",
+		"2":            "/home/marcel/projetos/data/csgo_analyze/images/icons/2.png",
+		"3":            "/home/marcel/projetos/data/csgo_analyze/images/icons/3.png",
+		"4":            "/home/marcel/projetos/data/csgo_analyze/images/icons/4.png",
+		"5":            "/home/marcel/projetos/data/csgo_analyze/images/icons/5.png",
 	}
 }
 
@@ -68,6 +68,7 @@ type Icon struct {
 type MapGenerator struct {
 	mapImage   *image.NRGBA
 	iconGetter func(Icon) *(image.Image)
+	imgSize    int
 }
 
 func checkError(err error) {
@@ -93,11 +94,11 @@ func iconImageGetter(iconNameToPathMap map[string]string) func(Icon) *(image.Ima
 	}
 }
 
-func (mapGenerator *MapGenerator) Setup(mapName string) {
+func (mapGenerator *MapGenerator) Setup(mapName string, imgSize int) {
 
 	iconNameToPath := getIconNameToImageMap()
 	mapGenerator.iconGetter = iconImageGetter(iconNameToPath)
-
+	mapGenerator.imgSize = imgSize
 	mapPath := getMapsToImageMap()[mapName]
 
 	// Load map overview image
@@ -112,13 +113,14 @@ func (mapGenerator *MapGenerator) Setup(mapName string) {
 	mapGenerator.mapImage = img
 }
 
-//DrawMap uses annotatedMap struct to generate a full image
-func (mapGenerator *MapGenerator) DrawMap(iconLists [][]Icon) []*(image.NRGBA) {
+//DrawMap uses iconLists and mapGenerator to generate all maps from a round
+func (mapGenerator MapGenerator) DrawMap(iconLists [][]Icon) []*(image.NRGBA) {
 	var imgLocation image.Rectangle
 	var baseImage *image.NRGBA
 	var roundImages []*image.NRGBA
 	for _, iconList := range iconLists {
-		*baseImage = *(mapGenerator.mapImage)
+		baseImage = image.NewNRGBA(mapGenerator.mapImage.Bounds())
+		draw.Draw(baseImage, mapGenerator.mapImage.Bounds(), mapGenerator.mapImage, image.ZP, draw.Over)
 		for _, icon := range iconList {
 			iconImg := *mapGenerator.iconGetter(icon)
 
