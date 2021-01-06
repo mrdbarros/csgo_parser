@@ -32,19 +32,26 @@ type CompositeEventHandler interface {
 	//Unregister() error
 }
 
+type PeriodicGenerator interface {
+	CompositeEventHandler
+	Update()
+}
+
 //IconGenerators generate icons on output map
-type IconGenerator interface {
-	GetIcons() ([]utils.Icon, error)
+type PeriodicIconGenerator interface {
+	PeriodicGenerator
+	GetPeriodicIcons() ([]utils.Icon, error)
 }
 
 //TabularGenerators generate data rows on output file
-type TabularGenerator interface {
-	GetTabularData() ([]string, []string, error) //header, data, error
+type PeriodicTabularGenerator interface {
+	PeriodicGenerator
+	GetPeriodicTabularData() ([]string, []float64, error) //header, data, error
 }
 
 //StatGenerators generate rows on output stat file
 type StatGenerator interface {
-	GetStatistics() ([]string, []string, error) //header, data, error
+	GetStatistics() ([]string, []float64, error) //header, data, error
 }
 
 //Interface to RoundStart event subscribers
@@ -78,6 +85,71 @@ type FrameDoneSubscriber interface {
 	FrameDoneHandler(events.FrameDone)
 }
 
+//Interface to RoundEndOfficial event subscribers
+type RoundEndOfficialSubscriber interface {
+	RoundEndOfficialHandler(events.RoundEndOfficial)
+}
+
+//Interface to BombDropped event subscribers
+type BombDroppedSubscriber interface {
+	BombDroppedHandler(events.BombDropped)
+}
+
+//Interface to BombDefused event subscribers
+type BombDefusedSubscriber interface {
+	BombDefusedHandler(events.BombDefused)
+}
+
+//Interface to BombPickup event subscribers
+type BombPickupSubscriber interface {
+	BombPickupHandler(events.BombPickup)
+}
+
+//Interface to FlashExplode event subscribers
+type FlashExplodeSubscriber interface {
+	FlashExplodeHandler(events.FlashExplode)
+}
+
+//Interface to Footstep event subscribers
+type FootstepSubscriber interface {
+	FootstepHandler(events.Footstep)
+}
+
+//Interface to HeExplode event subscribers
+type HeExplodeSubscriber interface {
+	HeExplodeHandler(events.HeExplode)
+}
+
+//Interface to ItemDrop event subscribers
+type ItemDropSubscriber interface {
+	ItemDropHandler(events.ItemDrop)
+}
+
+//Interface to ItemPickup event subscribers
+type ItemPickupSubscriber interface {
+	ItemPickupHandler(events.ItemPickup)
+}
+
+//Interface to Kill event subscribers
+type KillSubscriber interface {
+	KillHandler(events.Kill)
+}
+
+//Interface to PlayerFlashed event subscribers
+type PlayerFlashedSubscriber interface {
+	PlayerFlashedHandler(events.PlayerFlashed)
+}
+
+//Interface to PlayerHurt event subscribers
+type PlayerHurtSubscriber interface {
+	PlayerHurtHandler(events.PlayerHurt)
+}
+
+//Interface to WeaponReload event subscribers
+type WeaponReloadSubscriber interface {
+	WeaponReloadHandler(events.WeaponReload)
+}
+
 //basic shared handler for parsing
 type basicHandler struct {
 	parser      *dem.Parser
@@ -102,6 +174,45 @@ type basicHandler struct {
 	frameDoneHandlerID   dp.HandlerIdentifier
 	frameDoneSubscribers []FrameDoneSubscriber
 
+	roundEndOfficialHandlerID   dp.HandlerIdentifier
+	roundEndOfficialSubscribers []RoundEndOfficialSubscriber
+
+	bombDroppedHandlerID   dp.HandlerIdentifier
+	bombDroppedSubscribers []BombDroppedSubscriber
+
+	bombDefusedHandlerID   dp.HandlerIdentifier
+	bombDefusedSubscribers []BombDefusedSubscriber
+
+	flashExplodeHandlerID   dp.HandlerIdentifier
+	flashExplodeSubscribers []FlashExplodeSubscriber
+
+	bombPickupHandlerID   dp.HandlerIdentifier
+	bombPickupSubscribers []BombPickupSubscriber
+
+	footstepHandlerID   dp.HandlerIdentifier
+	footstepSubscribers []FootstepSubscriber
+
+	heExplodeHandlerID   dp.HandlerIdentifier
+	heExplodeSubscribers []HeExplodeSubscriber
+
+	itemDropHandlerID   dp.HandlerIdentifier
+	itemDropSubscribers []ItemDropSubscriber
+
+	itemPickupHandlerID   dp.HandlerIdentifier
+	itemPickupSubscribers []ItemPickupSubscriber
+
+	killHandlerID   dp.HandlerIdentifier
+	killSubscribers []KillSubscriber
+
+	playerFlashedHandlerID   dp.HandlerIdentifier
+	playerFlashedSubscribers []PlayerFlashedSubscriber
+
+	playerHurtHandlerID   dp.HandlerIdentifier
+	playerHurtSubscribers []PlayerHurtSubscriber
+
+	weaponReloadHandlerID   dp.HandlerIdentifier
+	weaponReloadSubscribers []WeaponReloadSubscriber
+
 	roundStartTime   float64
 	rootMatchPath    string
 	roundDirPath     string
@@ -113,6 +224,17 @@ type basicHandler struct {
 	frameGroup       int
 	isMatchStarted   bool
 	roundFreezeTime  bool
+	playerMappings   map[int]*playerMapping
+	sortedUserIDs    [][]int
+}
+
+func (bh *basicHandler) Register(basicHand *basicHandler) error {
+
+	return nil
+}
+
+func (bh *basicHandler) Update() {
+
 }
 
 func (bh *basicHandler) RegisterBasicEvents() error {
@@ -136,12 +258,12 @@ func (bh *basicHandler) UpdateTime() {
 	bh.currentTime = getCurrentTime(*(bh.parser), bh.tickRate)
 }
 
-func (bh *basicHandler) GetTabularData() ([]string, []string, error) {
+func (bh *basicHandler) GetPeriodicTabularData() ([]string, []float64, error) {
 	parser := *(bh.parser)
-	newCSVRow := []string{"0"}
+	newCSVRow := []float64{0}
 	currentRoundTime := getCurrentTime(parser, bh.tickRate)
 
-	newCSVRow[0] = strconv.FormatFloat(currentRoundTime-bh.roundStartTime, 'f', -1, 32)
+	newCSVRow[0] = currentRoundTime - bh.roundStartTime
 	header := []string{"round_time"}
 	return header, newCSVRow, nil
 
@@ -178,6 +300,17 @@ func (bh *basicHandler) RoundStartHandler(e events.RoundStart) {
 		subscriber.RoundStartHandler(e)
 	}
 
+	bh.playerMappings = remakePlayerMappings(parser.GameState())
+
+	if bh.roundNumber-1 < len(bh.sortedUserIDs) {
+		bh.CropData(bh.roundNumber - 1)
+	}
+	bh.sortedUserIDs = append(bh.sortedUserIDs, sortPlayersByUserID(bh.playerMappings))
+
+}
+
+func (bh *basicHandler) CropData(index int) {
+	bh.sortedUserIDs = bh.sortedUserIDs[:index]
 }
 
 func (bh *basicHandler) RegisterRoundEndSubscriber(rs RoundEndSubscriber) {
@@ -287,6 +420,240 @@ func (bh *basicHandler) FrameDoneHandler(e events.FrameDone) {
 	}
 }
 
+func (bh *basicHandler) RegisterRoundEndOfficialSubscriber(rs RoundEndOfficialSubscriber) {
+	parser := *(bh.parser)
+	if bh.roundEndOfficialHandlerID == nil {
+		bh.roundEndOfficialHandlerID = parser.RegisterEventHandler(bh.RoundEndOfficialHandler)
+	}
+
+	bh.roundEndOfficialSubscribers = append(bh.roundEndOfficialSubscribers, rs)
+
+}
+
+func (bh *basicHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.roundEndOfficialSubscribers {
+		subscriber.RoundEndOfficialHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterBombDroppedSubscriber(rs BombDroppedSubscriber) {
+	parser := *(bh.parser)
+	if bh.bombDroppedHandlerID == nil {
+		bh.bombDroppedHandlerID = parser.RegisterEventHandler(bh.BombDroppedHandler)
+	}
+
+	bh.bombDroppedSubscribers = append(bh.bombDroppedSubscribers, rs)
+
+}
+
+func (bh *basicHandler) BombDroppedHandler(e events.BombDropped) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.bombDroppedSubscribers {
+		subscriber.BombDroppedHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterBombDefusedSubscriber(rs BombDefusedSubscriber) {
+	parser := *(bh.parser)
+	if bh.bombDefusedHandlerID == nil {
+		bh.bombDefusedHandlerID = parser.RegisterEventHandler(bh.BombDefusedHandler)
+	}
+
+	bh.bombDefusedSubscribers = append(bh.bombDefusedSubscribers, rs)
+
+}
+
+func (bh *basicHandler) BombDefusedHandler(e events.BombDefused) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.bombDefusedSubscribers {
+		subscriber.BombDefusedHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterFlashExplodeSubscriber(rs FlashExplodeSubscriber) {
+	parser := *(bh.parser)
+	if bh.flashExplodeHandlerID == nil {
+		bh.flashExplodeHandlerID = parser.RegisterEventHandler(bh.FlashExplodeHandler)
+	}
+
+	bh.flashExplodeSubscribers = append(bh.flashExplodeSubscribers, rs)
+
+}
+
+func (bh *basicHandler) FlashExplodeHandler(e events.FlashExplode) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.flashExplodeSubscribers {
+		subscriber.FlashExplodeHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterBombPickupSubscriber(rs BombPickupSubscriber) {
+	parser := *(bh.parser)
+	if bh.bombPickupHandlerID == nil {
+		bh.bombPickupHandlerID = parser.RegisterEventHandler(bh.BombPickupHandler)
+	}
+
+	bh.bombPickupSubscribers = append(bh.bombPickupSubscribers, rs)
+
+}
+
+func (bh *basicHandler) BombPickupHandler(e events.BombPickup) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.bombPickupSubscribers {
+		subscriber.BombPickupHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterFootstepSubscriber(rs FootstepSubscriber) {
+	parser := *(bh.parser)
+	if bh.footstepHandlerID == nil {
+		bh.footstepHandlerID = parser.RegisterEventHandler(bh.FootstepHandler)
+	}
+
+	bh.footstepSubscribers = append(bh.footstepSubscribers, rs)
+
+}
+
+func (bh *basicHandler) FootstepHandler(e events.Footstep) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.footstepSubscribers {
+		subscriber.FootstepHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterHeExplodeSubscriber(rs HeExplodeSubscriber) {
+	parser := *(bh.parser)
+	if bh.heExplodeHandlerID == nil {
+		bh.heExplodeHandlerID = parser.RegisterEventHandler(bh.HeExplodeHandler)
+	}
+
+	bh.heExplodeSubscribers = append(bh.heExplodeSubscribers, rs)
+
+}
+
+func (bh *basicHandler) HeExplodeHandler(e events.HeExplode) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.heExplodeSubscribers {
+		subscriber.HeExplodeHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterItemDropSubscriber(rs ItemDropSubscriber) {
+	parser := *(bh.parser)
+	if bh.itemDropHandlerID == nil {
+		bh.itemDropHandlerID = parser.RegisterEventHandler(bh.ItemDropHandler)
+	}
+
+	bh.itemDropSubscribers = append(bh.itemDropSubscribers, rs)
+
+}
+
+func (bh *basicHandler) ItemDropHandler(e events.ItemDrop) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.itemDropSubscribers {
+		subscriber.ItemDropHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterItemPickupSubscriber(rs ItemPickupSubscriber) {
+	parser := *(bh.parser)
+	if bh.itemPickupHandlerID == nil {
+		bh.itemPickupHandlerID = parser.RegisterEventHandler(bh.ItemPickupHandler)
+	}
+
+	bh.itemPickupSubscribers = append(bh.itemPickupSubscribers, rs)
+
+}
+
+func (bh *basicHandler) ItemPickupHandler(e events.ItemPickup) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.itemPickupSubscribers {
+		subscriber.ItemPickupHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterKillSubscriber(rs KillSubscriber) {
+	parser := *(bh.parser)
+	if bh.killHandlerID == nil {
+		bh.killHandlerID = parser.RegisterEventHandler(bh.KillHandler)
+	}
+
+	bh.killSubscribers = append(bh.killSubscribers, rs)
+
+}
+
+func (bh *basicHandler) KillHandler(e events.Kill) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.killSubscribers {
+		subscriber.KillHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterPlayerFlashedSubscriber(rs PlayerFlashedSubscriber) {
+	parser := *(bh.parser)
+	if bh.playerFlashedHandlerID == nil {
+		bh.playerFlashedHandlerID = parser.RegisterEventHandler(bh.PlayerFlashedHandler)
+	}
+
+	bh.playerFlashedSubscribers = append(bh.playerFlashedSubscribers, rs)
+
+}
+
+func (bh *basicHandler) PlayerFlashedHandler(e events.PlayerFlashed) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.playerFlashedSubscribers {
+		subscriber.PlayerFlashedHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterPlayerHurtSubscriber(rs PlayerHurtSubscriber) {
+	parser := *(bh.parser)
+	if bh.playerHurtHandlerID == nil {
+		bh.playerHurtHandlerID = parser.RegisterEventHandler(bh.PlayerHurtHandler)
+	}
+
+	bh.playerHurtSubscribers = append(bh.playerHurtSubscribers, rs)
+
+}
+
+func (bh *basicHandler) PlayerHurtHandler(e events.PlayerHurt) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.playerHurtSubscribers {
+		subscriber.PlayerHurtHandler(e)
+	}
+}
+
+func (bh *basicHandler) RegisterWeaponReloadSubscriber(rs WeaponReloadSubscriber) {
+	parser := *(bh.parser)
+	if bh.weaponReloadHandlerID == nil {
+		bh.weaponReloadHandlerID = parser.RegisterEventHandler(bh.WeaponReloadHandler)
+	}
+
+	bh.weaponReloadSubscribers = append(bh.weaponReloadSubscribers, rs)
+
+}
+
+func (bh *basicHandler) WeaponReloadHandler(e events.WeaponReload) {
+	bh.UpdateTime()
+
+	for _, subscriber := range bh.weaponReloadSubscribers {
+		subscriber.WeaponReloadHandler(e)
+	}
+}
+
 type poppingGrenadeHandler struct {
 	basicHandler   *basicHandler
 	activeGrenades []*grenadeTracker
@@ -340,7 +707,7 @@ func (ph *poppingGrenadeHandler) IsTracked(entityID int) bool {
 
 // }
 
-func (ph *poppingGrenadeHandler) GetIcons() ([]utils.Icon, error) {
+func (ph *poppingGrenadeHandler) GetPeriodicIcons() ([]utils.Icon, error) {
 	var iconList []utils.Icon
 	for _, activeGrenade := range ph.activeGrenades {
 		newIcon := ph.baseIcons[activeGrenade.grenadeEvent.GrenadeType]
@@ -370,147 +737,47 @@ func (ph *poppingGrenadeHandler) SetBaseIcons() {
 	}
 }
 
-// type gameStateInfoHandler struct {
-
-// 	bombPlanted          bool
-// 	bombPlantedTime      float64
-// 	bombPlantedHandlerID dp.HandlerIdentifier
-// 	roundStartHandlerID  dp.HandlerIdentifier
-// 	baseIcons            map[string]utils.Icon
-// }
-
-type playerInfoHandler struct {
-	basicHandler   *basicHandler
-	playerMappings map[int]*playerMapping
-	sortedUserIDs  []int
+type playerPeriodicInfoHandler struct {
+	basicHandler                *basicHandler
+	periodicTabularInfoGatherer []IPlayersPeriodicTabularInfoGatherer
+	periodicPlayerIconGatherer  []IPeriodicPlayerIconGatherer
 }
 
-func (ph *playerInfoHandler) Register(bh *basicHandler) error {
+func (ph *playerPeriodicInfoHandler) Register(bh *basicHandler) error {
 	ph.basicHandler = bh
-	bh.RegisterRoundStartSubscriber(interface{}(ph).(RoundStartSubscriber))
+
+	bg := new(basicPlayerPositionGatherer)
+	bg.Setup(bh)
+	ph.periodicPlayerIconGatherer = append(ph.periodicPlayerIconGatherer, bg)
+	ph.periodicTabularInfoGatherer = append(ph.periodicTabularInfoGatherer, new(hpGatherer))
+	ph.periodicTabularInfoGatherer = append(ph.periodicTabularInfoGatherer, new(currentFlashTimeGatherer))
+	ph.periodicTabularInfoGatherer = append(ph.periodicTabularInfoGatherer, new(weaponsGatherer))
 	return nil
 }
 
-func (ph *playerInfoHandler) RoundStartHandler(e events.RoundStart) {
-	parser := *(ph.basicHandler.parser)
-	ph.playerMappings = remakePlayerMappings(parser.GameState())
-	ph.sortedUserIDs = sortPlayersByUserID(ph.playerMappings)
-
-}
-func (ph *playerInfoHandler) processPlayerPositions() (iconList []utils.Icon) {
-	ctCount := 0
-	tCount := 0
-	playerCount := 0
-	for _, userID := range ph.sortedUserIDs {
-		if playerMap, ok := ph.playerMappings[userID]; ok {
-			player := playerMap.playerObject
-			isCT := (player.Team == 3)
-			isTR := (player.Team == 2)
-
-			if player.Health() > 0 {
-				x, y := ph.basicHandler.mapMetadata.TranslateScale(player.Position().X, player.Position().Y)
-				var icon string
-
-				if isCT {
-
-					icon = "ct_"
-					if player.HasDefuseKit() {
-						newIcon := utils.Icon{X: x, Y: y, IconName: "kit"} //t or ct icon
-						iconList = append(iconList, newIcon)
-					}
-					ctCount++
-					playerCount = ctCount
-				} else if isTR {
-					icon = "terrorist_"
-
-					tCount++
-					playerCount = tCount
-				}
-
-				newIcon := utils.Icon{X: x, Y: y, IconName: icon + strconv.Itoa(playerCount), Rotate: float64(player.ViewDirectionX())} //t or ct icon
-				iconList = append(iconList, newIcon)
-				newIcon = utils.Icon{X: x, Y: y, IconName: strconv.Itoa(playerCount)}
-				iconList = append(iconList, newIcon)
-
-			}
-
-		} else {
-			fmt.Println("key not found", userID)
-		}
-
+func (ph *playerPeriodicInfoHandler) Update() {
+	var periodicGatherers []IPeriodicPlayerInfoGatherer
+	for _, iconGatherer := range ph.periodicPlayerIconGatherer {
+		iconGatherer.Init()
+		periodicGatherers = append(periodicGatherers, iconGatherer)
 	}
-	return iconList
-}
-
-func (ph playerInfoHandler) processPlayerWeapons() (newCSVRow []string, header []string) {
-
-	newCSVRow = []string{
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0"}
-	lenPerPlayer := len(newCSVRow) / 10
-	playerInfo := []string{}
-	playerBasePos := 0
-	ctCount := 0
-	tCount := 0
-	for _, userID := range ph.sortedUserIDs {
-		if playerMap, ok := allPlayers[userID]; ok {
-			player := playerMap.playerObject
-			isCT := (player.Team == 3)
-			isTR := (player.Team == 2)
-			playerInfo = fillPlayerWeapons(player)
-
-			if isCT {
-				playerBasePos = lenPerPlayer * (5 + ctCount)
-
-				ctCount++
-			} else if isTR {
-				playerBasePos = lenPerPlayer * tCount
-				tCount++
-			}
-
-			for i, info := range playerInfo {
-				newCSVRow[playerBasePos+i] = info
-			}
-
-		} else {
-			fmt.Println("key not found", userID)
-		}
-
+	for _, tabularGatherer := range ph.periodicTabularInfoGatherer {
+		tabularGatherer.Init()
+		periodicGatherers = append(periodicGatherers, tabularGatherer)
 	}
-	header = []string{
-		"t_1_mainweapon", "t_1_secweapon", "t_1_flashbangs", "t_1_hassmoke", "t_1_hasmolotov", "t_1_hashe", "t_1_armor", "t_1_hashelmet", "t_1_hasc4",
-		"t_2_mainweapon", "t_2_secweapon", "t_2_flashbangs", "t_2_hassmoke", "t_2_hasmolotov", "t_2_hashe", "t_2_armor", "t_2_hashelmet", "t_2_hasc4",
-		"t_3_mainweapon", "t_3_secweapon", "t_3_flashbangs", "t_3_hassmoke", "t_3_hasmolotov", "t_3_hashe", "t_3_armor", "t_3_hashelmet", "t_3_hasc4",
-		"t_4_mainweapon", "t_4_secweapon", "t_4_flashbangs", "t_4_hassmoke", "t_4_hasmolotov", "t_4_hashe", "t_4_armor", "t_4_hashelmet", "t_4_hasc4",
-		"t_5_mainweapon", "t_5_secweapon", "t_5_flashbangs", "t_5_hassmoke", "t_5_hasmolotov", "t_5_hashe", "t_5_armor", "t_5_hashelmet", "t_5_hasc4",
-		"ct_1_mainweapon", "ct_1_secweapon", "ct_1_flashbangs", "ct_1_hassmoke", "ct_1_hasmolotov", "ct_1_hashe", "ct_1_armor", "ct_1_hashelmet", "ct_1_hasdefusekit",
-		"ct_2_mainweapon", "ct_2_secweapon", "ct_2_flashbangs", "ct_2_hassmoke", "ct_2_hasmolotov", "ct_2_hashe", "ct_2_armor", "ct_2_hashelmet", "ct_2_hasdefusekit",
-		"ct_3_mainweapon", "ct_3_secweapon", "ct_3_flashbangs", "ct_3_hassmoke", "ct_3_hasmolotov", "ct_3_hashe", "ct_3_armor", "ct_3_hashelmet", "ct_3_hasdefusekit",
-		"ct_4_mainweapon", "ct_4_secweapon", "ct_4_flashbangs", "ct_4_hassmoke", "ct_4_hasmolotov", "ct_4_hashe", "ct_4_armor", "ct_4_hashelmet", "ct_4_hasdefusekit",
-		"ct_5_mainweapon", "ct_5_secweapon", "ct_5_flashbangs", "ct_5_hassmoke", "ct_5_hasmolotov", "ct_5_hashe", "ct_5_armor", "ct_5_hashelmet", "ct_5_hasdefusekit"}
-	return newCSVRow[:], header
+
+	ph.updatePlayerInfo(periodicGatherers)
+
 }
 
-func (ph *playerInfoHandler) getPlayersHPAndFlashtime() (newCSVRow []string, header []string) {
+func (ph *playerPeriodicInfoHandler) updatePlayerInfo(playerInfoGatherers []IPeriodicPlayerInfoGatherer) {
 
-	newCSVRow = []string{
-		"0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
-		"0", "0", "0", "0", "0", "0", "0", "0", "0", "0"}
 	tCount := 0
 	ctCount := 0
 	playerBasePos := 0
-	for _, userID := range ph.sortedUserIDs {
-		if _, ok := ph.playerMappings[userID]; ok {
-			player := ph.playerMappings[userID].playerObject
-
+	for _, userID := range ph.basicHandler.sortedUserIDs[len(ph.basicHandler.sortedUserIDs)-1] {
+		if _, ok := ph.basicHandler.playerMappings[userID]; ok {
+			player := ph.basicHandler.playerMappings[userID].playerObject
 			isCT := (player.Team == 3)
 			isTR := (player.Team == 2)
 
@@ -532,37 +799,312 @@ func (ph *playerInfoHandler) getPlayersHPAndFlashtime() (newCSVRow []string, hea
 				playerBasePos = tCount
 				tCount++
 			}
-
-			newCSVRow[playerBasePos] = strconv.FormatFloat(float64(player.Health())/100, 'f', -1, 32)
-			newCSVRow[10+playerBasePos] = strconv.FormatFloat(player.FlashDurationTimeRemaining().Seconds(), 'f', -1, 32)
+			for _, playerGatherer := range playerInfoGatherers {
+				playerGatherer.updatePlayer(player, playerBasePos)
+			}
 
 		} else {
 			fmt.Println("key not found", userID)
 		}
 
 	}
-	header = []string{"t_1", "t_2", "t_3", "t_4", "t_5", "ct_1", "ct_2", "ct_3", "ct_4", "ct_5",
-		"t_1_blindtime", "t_2_blindtime", "t_3_blindtime", "t_4_blindtime", "t_5_blindtime",
-		"ct_1_blindtime", "ct_2_blindtime", "ct_3_blindtime", "ct_4_blindtime", "ct_5_blindtime"}
-	return newCSVRow[:], header
+
 }
 
-func (ph *playerInfoHandler) GetTabularData() (newHeader []string, newCSVRow []string, err error) {
+func (ph *playerPeriodicInfoHandler) GetPeriodicTabularData() (newHeader []string, newCSVRow []float64, err error) {
 
-	tempCSV, tempHeader := ph.getPlayersHPAndFlashtime()
-	newCSVRow = append(newCSVRow, tempCSV...)
-	newHeader = append(newHeader, tempHeader...)
+	for _, periodicTabularGatherer := range ph.periodicTabularInfoGatherer {
 
-	tempCSV, tempHeader = ph.processPlayerWeapons()
-	newCSVRow = append(newCSVRow, tempCSV...)
-	newHeader = append(newHeader, tempHeader...)
+		tempHeader, tempCSV := periodicTabularGatherer.GetPeriodicTabularInfo()
+		newCSVRow = append(newCSVRow, tempCSV...)
+		newHeader = append(newHeader, tempHeader...)
+	}
+
 	return newHeader, newCSVRow, err
 }
 
-func (ph *playerInfoHandler) GetIcons() ([]utils.Icon, error) {
+func (ph *playerPeriodicInfoHandler) GetPeriodicIcons() ([]utils.Icon, error) {
+	var iconList []utils.Icon
+	for _, periodicIconGatherer := range ph.periodicPlayerIconGatherer {
 
-	return ph.processPlayerPositions(), nil
+		iconList = append(iconList, periodicIconGatherer.GetPlayerIcons()...)
 
+	}
+	return iconList, nil
+
+}
+
+type IPlayersInfoGatherer interface {
+	Init()
+}
+
+type IPeriodicPlayerInfoGatherer interface {
+	IPlayersInfoGatherer
+	updatePlayer(*common.Player, int)
+}
+
+type IPeriodicPlayerIconGatherer interface {
+	IPeriodicPlayerInfoGatherer
+	GetPlayerIcons() []utils.Icon
+}
+
+type IPlayersPeriodicTabularInfoGatherer interface {
+	IPeriodicPlayerInfoGatherer
+	GetPeriodicTabularInfo() ([]string, []float64) //header,data
+}
+
+type playersTabularInfoGatherer struct {
+	sizePerPlayer  int
+	header         []string
+	playersTabInfo []float64
+}
+
+type hpGatherer struct {
+	playersInfoGatherer playersTabularInfoGatherer
+}
+
+func (hg *hpGatherer) Init() {
+	hg.playersInfoGatherer.header = []string{"t_1", "t_2", "t_3", "t_4", "t_5", "ct_1", "ct_2", "ct_3", "ct_4", "ct_5"}
+
+	hg.playersInfoGatherer.sizePerPlayer = len(hg.playersInfoGatherer.header) / 10
+	hg.playersInfoGatherer.playersTabInfo = nil
+	for range hg.playersInfoGatherer.header {
+		hg.playersInfoGatherer.playersTabInfo = append(hg.playersInfoGatherer.playersTabInfo, 0.0)
+	}
+
+}
+
+func (hg *hpGatherer) updatePlayer(player *common.Player, basePos int) {
+	hg.playersInfoGatherer.playersTabInfo[basePos] = float64(player.Health()) / 100
+
+}
+
+func (hg *hpGatherer) GetPeriodicTabularInfo() ([]string, []float64) {
+	return hg.playersInfoGatherer.header, hg.playersInfoGatherer.playersTabInfo
+
+}
+
+type currentFlashTimeGatherer struct {
+	playersInfoGatherer playersTabularInfoGatherer
+}
+
+func (hg *currentFlashTimeGatherer) Init() {
+	hg.playersInfoGatherer.header = []string{"t_1_blindtime", "t_2_blindtime", "t_3_blindtime", "t_4_blindtime", "t_5_blindtime",
+		"ct_1_blindtime", "ct_2_blindtime", "ct_3_blindtime", "ct_4_blindtime", "ct_5_blindtime"}
+
+	hg.playersInfoGatherer.sizePerPlayer = len(hg.playersInfoGatherer.header) / 10
+	hg.playersInfoGatherer.playersTabInfo = nil
+	for range hg.playersInfoGatherer.header {
+		hg.playersInfoGatherer.playersTabInfo = append(hg.playersInfoGatherer.playersTabInfo, 0.0)
+	}
+
+}
+
+func (hg *currentFlashTimeGatherer) updatePlayer(player *common.Player, basePos int) {
+
+	hg.playersInfoGatherer.playersTabInfo[basePos] = player.FlashDurationTimeRemaining().Seconds()
+
+}
+
+func (hg *currentFlashTimeGatherer) GetPeriodicTabularInfo() ([]string, []float64) {
+	return hg.playersInfoGatherer.header, hg.playersInfoGatherer.playersTabInfo
+
+}
+
+type weaponsGatherer struct {
+	playersInfoGatherer playersTabularInfoGatherer
+}
+
+func (wg *weaponsGatherer) Init() {
+	wg.playersInfoGatherer.header = []string{
+		"t_1_mainweapon", "t_1_secweapon", "t_1_flashbangs", "t_1_hassmoke", "t_1_hasmolotov", "t_1_hashe", "t_1_armor", "t_1_hashelmet", "t_1_hasc4",
+		"t_2_mainweapon", "t_2_secweapon", "t_2_flashbangs", "t_2_hassmoke", "t_2_hasmolotov", "t_2_hashe", "t_2_armor", "t_2_hashelmet", "t_2_hasc4",
+		"t_3_mainweapon", "t_3_secweapon", "t_3_flashbangs", "t_3_hassmoke", "t_3_hasmolotov", "t_3_hashe", "t_3_armor", "t_3_hashelmet", "t_3_hasc4",
+		"t_4_mainweapon", "t_4_secweapon", "t_4_flashbangs", "t_4_hassmoke", "t_4_hasmolotov", "t_4_hashe", "t_4_armor", "t_4_hashelmet", "t_4_hasc4",
+		"t_5_mainweapon", "t_5_secweapon", "t_5_flashbangs", "t_5_hassmoke", "t_5_hasmolotov", "t_5_hashe", "t_5_armor", "t_5_hashelmet", "t_5_hasc4",
+		"ct_1_mainweapon", "ct_1_secweapon", "ct_1_flashbangs", "ct_1_hassmoke", "ct_1_hasmolotov", "ct_1_hashe", "ct_1_armor", "ct_1_hashelmet", "ct_1_hasdefusekit",
+		"ct_2_mainweapon", "ct_2_secweapon", "ct_2_flashbangs", "ct_2_hassmoke", "ct_2_hasmolotov", "ct_2_hashe", "ct_2_armor", "ct_2_hashelmet", "ct_2_hasdefusekit",
+		"ct_3_mainweapon", "ct_3_secweapon", "ct_3_flashbangs", "ct_3_hassmoke", "ct_3_hasmolotov", "ct_3_hashe", "ct_3_armor", "ct_3_hashelmet", "ct_3_hasdefusekit",
+		"ct_4_mainweapon", "ct_4_secweapon", "ct_4_flashbangs", "ct_4_hassmoke", "ct_4_hasmolotov", "ct_4_hashe", "ct_4_armor", "ct_4_hashelmet", "ct_4_hasdefusekit",
+		"ct_5_mainweapon", "ct_5_secweapon", "ct_5_flashbangs", "ct_5_hassmoke", "ct_5_hasmolotov", "ct_5_hashe", "ct_5_armor", "ct_5_hashelmet", "ct_5_hasdefusekit"}
+
+	wg.playersInfoGatherer.sizePerPlayer = len(wg.playersInfoGatherer.header) / 10
+	wg.playersInfoGatherer.playersTabInfo = nil
+	for range wg.playersInfoGatherer.header {
+		wg.playersInfoGatherer.playersTabInfo = append(wg.playersInfoGatherer.playersTabInfo, 0)
+	}
+
+}
+
+func (wg *weaponsGatherer) updatePlayer(player *common.Player, basePos int) {
+	//"mainweapon", "secweapon", "flashbangs", "hassmoke", "hasmolotov", "hashe","armorvalue","hashelmet","hasdefusekit/hasc4",
+
+	weapons := []float64{0, 0, 0, 0, 0, 0, 0, 0, 0}
+
+	primaryWeaponClasses := []int{2, 3, 4}
+	secondaryWeaponClasses := []int{1}
+
+	molotovAndIncendiary := []int{502, 503}
+
+	equipSlice := player.Weapons()
+	equipClass := 0
+	equipType := 0
+	for _, equip := range equipSlice {
+		equipClass = int(equip.Class())
+		equipType = int(equip.Type)
+		if findIntInSlice(primaryWeaponClasses, equipClass) {
+			weapons[0] = float64(equipType)
+		}
+		if findIntInSlice(secondaryWeaponClasses, equipClass) {
+			weapons[1] = float64(equipType)
+		}
+		if equipType == 504 { //flash
+			weapons[2] = float64(player.AmmoLeft[equip.AmmoType()])
+		}
+		if equipType == 505 { //smoke
+			weapons[3] = 1
+		}
+		if findIntInSlice(molotovAndIncendiary, equipType) { //molotov or incendiary
+			weapons[4] = 1
+		}
+		if equipType == 506 { //HE
+			weapons[5] = 1
+		}
+		if equipType == 406 || player.HasDefuseKit() { //defuse kit / c4
+			weapons[8] = 1
+		}
+
+	}
+	weapons[6] = float64(player.Armor())
+	if player.HasHelmet() {
+		weapons[7] = 1
+	}
+
+	for i, weapon := range weapons {
+		wg.playersInfoGatherer.playersTabInfo[basePos*wg.playersInfoGatherer.sizePerPlayer+i] = weapon
+	}
+}
+
+func (wg *weaponsGatherer) GetPeriodicTabularInfo() ([]string, []float64) {
+	return wg.playersInfoGatherer.header, wg.playersInfoGatherer.playersTabInfo
+
+}
+
+type statisticHolder struct {
+	statsHeaders []string
+	playerStats  []map[int][]float64
+}
+
+func (kc statisticHolder) GetRoundStatistic(roundNumber int, userID int) ([]string, []float64) {
+	return kc.statsHeaders, kc.playerStats[roundNumber-1][userID]
+}
+
+type KDACalculator struct {
+	basicHandler *basicHandler
+	statisticHolder
+}
+
+type PlayerStatisticCalculator interface {
+	CompositeEventHandler
+	IPlayersInfoGatherer
+	GetRoundStatistic(roundNumber int, userID int) ([]string, []float64) //stats header, stats
+	GetMatchStatistic(userID int) ([]string, []float64)                  //stats header, stats
+}
+
+func (kc *KDACalculator) GetMatchStatistic(userID int) ([]string, []float64) {
+	consolidatedStat := []float64{}
+	for _, roundStatMap := range kc.playerStats {
+		if playerStat, ok := roundStatMap[userID]; ok {
+
+			consolidatedStat = utils.ElementWiseSum(consolidatedStat, playerStat)
+		}
+	}
+	return kc.statsHeaders, consolidatedStat
+}
+
+func (kc *KDACalculator) Register(bh *basicHandler) error {
+	kc.basicHandler = bh
+	bh.RegisterRoundStartSubscriber(interface{}(kc).(RoundStartSubscriber))
+	bh.RegisterKillSubscriber(interface{}(kc).(KillSubscriber))
+	return nil
+}
+
+func (kc *KDACalculator) Init() {
+
+}
+
+func (kc *KDACalculator) AddNewRound() {
+
+	kc.playerStats = append(kc.playerStats, make(map[int][]float64))
+	for _, userID := range kc.basicHandler.sortedUserIDs[len(kc.basicHandler.sortedUserIDs)-1] {
+		for range kc.statsHeaders {
+			kc.playerStats[len(kc.playerStats)-1][userID] = append(kc.playerStats[len(kc.playerStats)-1][userID], 0)
+		}
+
+	}
+
+}
+
+func (kc *KDACalculator) RoundStartHandler(e events.Kill) {
+	if kc.basicHandler.roundNumber-1 > len(kc.playerStats) {
+		kc.playerStats = kc.playerStats[:kc.basicHandler.roundNumber-1]
+	}
+	kc.AddNewRound()
+}
+
+func (kc *KDACalculator) KillHandler(e events.Kill) {
+	kc.playerStats[kc.basicHandler.roundNumber-1][e.Killer.UserID][0] += 1   //add kill
+	kc.playerStats[kc.basicHandler.roundNumber-1][e.Assister.UserID][1] += 1 //add assist
+	kc.playerStats[kc.basicHandler.roundNumber-1][e.Victim.UserID][2] += 1   //add death
+}
+
+type playersIconGatherer struct {
+	playersIcons []utils.Icon
+	mapMetadata  metadata.Map
+}
+
+type basicPlayerPositionGatherer struct {
+	playersIconGatherer playersIconGatherer
+}
+
+func (bg *basicPlayerPositionGatherer) Init() {
+	bg.playersIconGatherer.playersIcons = nil
+}
+
+func (bg *basicPlayerPositionGatherer) Setup(basicHandler *basicHandler) {
+	bg.playersIconGatherer.mapMetadata = basicHandler.mapMetadata
+}
+
+func (bg *basicPlayerPositionGatherer) updatePlayer(player *common.Player, basePos int) {
+
+	if player.Health() > 0 {
+		x, y := bg.playersIconGatherer.mapMetadata.TranslateScale(player.Position().X, player.Position().Y)
+		var icon string
+
+		if basePos/5 == 1 {
+
+			icon = "ct_"
+			if player.HasDefuseKit() {
+				newIcon := utils.Icon{X: x, Y: y, IconName: "kit"} //t or ct icon
+				bg.playersIconGatherer.playersIcons = append(bg.playersIconGatherer.playersIcons, newIcon)
+			}
+
+		} else {
+			icon = "terrorist_"
+
+		}
+		playerCount := basePos % 5
+
+		newIcon := utils.Icon{X: x, Y: y, IconName: icon + strconv.Itoa(playerCount), Rotate: float64(player.ViewDirectionX())} //t or ct icon
+		bg.playersIconGatherer.playersIcons = append(bg.playersIconGatherer.playersIcons, newIcon)
+		newIcon = utils.Icon{X: x, Y: y, IconName: strconv.Itoa(playerCount)}
+		bg.playersIconGatherer.playersIcons = append(bg.playersIconGatherer.playersIcons, newIcon)
+	}
+
+}
+
+func (bg *basicPlayerPositionGatherer) GetPlayerIcons() []utils.Icon {
+	return bg.playersIconGatherer.playersIcons
 }
 
 type bombHandler struct {
@@ -579,6 +1121,10 @@ func (bmbh *bombHandler) Register(bh *basicHandler) error {
 	return nil
 }
 
+func (bmbh *bombHandler) Update() {
+
+}
+
 func (bh *bombHandler) BombPlantedHandler(e events.BombPlanted) {
 	parser := (*bh.basicHandler.parser)
 	bh.bombPlanted = true
@@ -592,7 +1138,7 @@ func (bh *bombHandler) RoundStartHandler(e events.RoundStart) {
 
 }
 
-func (bh *bombHandler) GetIcons() (icons []utils.Icon, err error) {
+func (bh *bombHandler) GetPeriodicIcons() (icons []utils.Icon, err error) {
 	parser := (*bh.basicHandler.parser)
 	bomb := parser.GameState().Bomb()
 	var icon string
@@ -609,10 +1155,10 @@ func (bh *bombHandler) GetIcons() (icons []utils.Icon, err error) {
 	return icons, nil
 }
 
-func (bh *bombHandler) GetTabularData() ([]string, []string, error) {
-	newCSVRow := []string{"0"}
+func (bh *bombHandler) GetPeriodicTabularData() ([]string, []float64, error) {
+	newCSVRow := []float64{0}
 	if bh.bombPlanted {
-		newCSVRow[0] = strconv.FormatFloat(bh.basicHandler.currentTime-bh.bombPlantedTime, 'f', -1, 32)
+		newCSVRow[0] = bh.basicHandler.currentTime - bh.bombPlantedTime
 	}
 
 	header := []string{"bomb_timeticking"}
@@ -625,31 +1171,32 @@ type grenadeTracker struct {
 }
 
 type matchData struct {
-	matchIcons       [][][]utils.Icon //dimensions: rounds x frames x icons
-	matchTabularData [][][]string
-	matchStatistics  [][][]string
+	matchIcons                      [][][]utils.Icon //dimensions: rounds x frames x icons
+	matchPeriodicTabularDataHeaders []string
+	matchPeriodicTabularData        [][][]float64
+	matchStatisticsHeaders          []string
+	matchStatistics                 [][]float64
 }
 
 func (md *matchData) CropData(index int) {
 	md.matchIcons = md.matchIcons[:index]
-	md.matchTabularData = md.matchTabularData[:index]
+	md.matchPeriodicTabularData = md.matchPeriodicTabularData[:index]
 	md.matchStatistics = md.matchStatistics[:index]
 }
 
 func (md *matchData) AddNewRound() {
 	md.matchIcons = append(md.matchIcons, [][]utils.Icon{})
-	md.matchTabularData = append(md.matchTabularData, [][]string{})
-	md.matchStatistics = append(md.matchStatistics, [][]string{})
+	md.matchPeriodicTabularData = append(md.matchPeriodicTabularData, [][]float64{})
+	md.matchStatistics = append(md.matchStatistics, []float64{})
 }
 
 func (md *matchData) AddNewFrameGroup(roundNumber int) {
 	if len(md.matchIcons[roundNumber]) == 0 {
-		md.matchTabularData[roundNumber] = append(md.matchTabularData[roundNumber], []string{})
-		md.matchStatistics[roundNumber] = append(md.matchStatistics[roundNumber], []string{})
+		md.matchPeriodicTabularData[roundNumber] = append(md.matchPeriodicTabularData[roundNumber], []float64{})
 	}
 	md.matchIcons[roundNumber] = append(md.matchIcons[roundNumber], []utils.Icon{})
-	md.matchTabularData[roundNumber] = append(md.matchTabularData[roundNumber], []string{})
-	md.matchStatistics[roundNumber] = append(md.matchStatistics[roundNumber], []string{})
+	md.matchPeriodicTabularData[roundNumber] = append(md.matchPeriodicTabularData[roundNumber], []float64{})
+
 }
 
 type infoGenerationHandler struct {
@@ -660,8 +1207,8 @@ type infoGenerationHandler struct {
 	isNewRound           bool
 	updateInterval       float64
 	roundEndRegistered   bool //set to true after processing the first frame subsequent to winner callout
-	allIconGenerators    *[]IconGenerator
-	allTabularGenerators *[]TabularGenerator
+	allIconGenerators    *[]PeriodicIconGenerator
+	allTabularGenerators *[]PeriodicTabularGenerator
 	allStatGenerators    *[]StatGenerator
 	mapGenerator         utils.MapGenerator
 	matchData            *matchData
@@ -672,6 +1219,7 @@ func (ih *infoGenerationHandler) Register(bh *basicHandler) error {
 	ih.basicHandler = bh
 	bh.RegisterRoundStartSubscriber(interface{}(ih).(RoundStartSubscriber))
 	bh.RegisterFrameDoneSubscriber(interface{}(ih).(FrameDoneSubscriber))
+	bh.RegisterRoundEndOfficialSubscriber(interface{}(ih).(RoundEndOfficialSubscriber))
 	return nil
 }
 
@@ -692,11 +1240,16 @@ func (ih *infoGenerationHandler) RoundStartHandler(e events.RoundStart) {
 	} else {
 		RemoveContents(ih.basicHandler.roundDirPath)
 	}
-	ih.basicHandler.roundTabularPath = ih.basicHandler.roundDirPath + "/tabular.csv"
+	ih.basicHandler.roundTabularPath = ih.basicHandler.roundDirPath + "/periodic_data.csv"
+	ih.basicHandler.roundStatPath = ih.basicHandler.roundDirPath + "/statistics.csv"
 	ih.isNewRound = true
-	roundCSV, err := os.Create(ih.basicHandler.roundTabularPath)
+	roundPeriodicDataCSV, err := os.Create(ih.basicHandler.roundTabularPath)
 	checkError(err)
-	defer roundCSV.Close()
+	defer roundPeriodicDataCSV.Close()
+
+	roundStatCSV, err := os.Create(ih.basicHandler.roundStatPath)
+	checkError(err)
+	defer roundStatCSV.Close()
 
 	ih.lastUpdate = 0.0
 
@@ -711,17 +1264,48 @@ func (ih *infoGenerationHandler) RoundStartHandler(e events.RoundStart) {
 
 }
 
+func (ih *infoGenerationHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+
+	if ih.basicHandler.roundWinner != "" && ih.basicHandler.isMatchStarted {
+		fmt.Println("Generating round ", ih.basicHandler.roundNumber)
+
+		var tempHeader []string
+		var tempData []float64
+		var newHeaderStat []string
+		var newStat []float64
+		var err error
+		for _, statGenerator := range *ih.allStatGenerators {
+			tempHeader, tempData, err = statGenerator.GetStatistics()
+			checkError(err)
+			newHeaderStat = append(newHeaderStat, tempHeader...)
+			newStat = append(newStat, tempData...)
+		}
+
+		if ih.basicHandler.roundNumber == 1 && len(*ih.allStatGenerators) > 0 {
+			ih.matchData.matchStatisticsHeaders = nil
+			ih.matchData.matchStatisticsHeaders = append(ih.matchData.matchStatisticsHeaders,
+				newHeaderStat...)
+
+		}
+		if len(*ih.allStatGenerators) > 0 {
+			ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1] = append(ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1],
+				newStat...)
+		}
+
+		generateRoundMaps(ih.mapGenerator, ih.matchData.matchIcons[ih.basicHandler.roundNumber-1],
+			ih.basicHandler.roundDirPath, ih.imgSize)
+		writeToCSV(ih.matchData.matchPeriodicTabularDataHeaders, ih.matchData.matchPeriodicTabularData[ih.basicHandler.roundNumber-1],
+			ih.basicHandler.roundTabularPath)
+		writeToCSV(ih.matchData.matchStatisticsHeaders, ih.matchData.matchStatistics[ih.basicHandler.roundNumber:],
+			ih.basicHandler.roundStatPath)
+		ih.roundEndRegistered = true
+	}
+}
+
 func (ih *infoGenerationHandler) FrameDoneHandler(e events.FrameDone) {
 
 	if ih.isReadyForProcessing() {
 		ih.processFrameEnd()
-		if ih.basicHandler.roundWinner != "" {
-			generateRoundMaps(ih.mapGenerator, ih.matchData.matchIcons[ih.basicHandler.roundNumber-1],
-				ih.basicHandler.roundDirPath, ih.imgSize)
-			writeToCSV(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1],
-				ih.basicHandler.roundTabularPath)
-			ih.roundEndRegistered = true
-		}
 	}
 }
 
@@ -739,7 +1323,7 @@ func (ih *infoGenerationHandler) isReadyForProcessing() bool {
 	return false
 }
 
-func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, allIconGenerators *[]IconGenerator, allTabularGenerators *[]TabularGenerator,
+func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, allIconGenerators *[]PeriodicIconGenerator, allTabularGenerators *[]PeriodicTabularGenerator,
 	allStatGenerators *[]StatGenerator) error {
 
 	var mapGenerator utils.MapGenerator
@@ -757,8 +1341,10 @@ func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, allI
 
 func (ih *infoGenerationHandler) processFrameEnd() {
 	var newIcons []utils.Icon
+
 	for _, iconGenerator := range *ih.allIconGenerators {
-		tempIcons, err := iconGenerator.GetIcons()
+		iconGenerator.Update()
+		tempIcons, err := iconGenerator.GetPeriodicIcons()
 		checkError(err)
 		newIcons = append(newIcons, tempIcons...)
 	}
@@ -766,47 +1352,36 @@ func (ih *infoGenerationHandler) processFrameEnd() {
 	ih.matchData.matchIcons[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup] =
 		append(ih.matchData.matchIcons[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup], newIcons...)
 
-	var newHeaderStat []string
-	var newStat []string
 	var newHeaderTabular []string
-	var newTabular []string
+	var newTabular []float64
 	var tempHeader []string
-	var tempData []string
+	var tempData []float64
 	var err error
-	for _, statGenerator := range *ih.allStatGenerators {
-		tempHeader, tempData, err = statGenerator.GetStatistics()
-		checkError(err)
-		newHeaderStat = append(newHeaderStat, tempHeader...)
-		newStat = append(newStat, tempData...)
-	}
 
 	for _, tabularGenerator := range *ih.allTabularGenerators {
-		tempHeader, tempData, err = tabularGenerator.GetTabularData()
+		tabularGenerator.Update()
+		tempHeader, tempData, err = tabularGenerator.GetPeriodicTabularData()
 		checkError(err)
 		newHeaderTabular = append(newHeaderTabular, tempHeader...)
 		newTabular = append(newTabular, tempData...)
 	}
 
 	if ih.isNewRound {
-		ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup] =
-			append(ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup], newHeaderStat...)
-
-		ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup] =
-			append(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup], newHeaderTabular...)
+		ih.matchData.matchPeriodicTabularDataHeaders = nil
+		ih.matchData.matchPeriodicTabularDataHeaders =
+			append(ih.matchData.matchPeriodicTabularDataHeaders, newHeaderTabular...)
 		ih.isNewRound = false
 	}
 
-	ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1] =
-		append(ih.matchData.matchStatistics[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1], newStat...)
-	ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1] =
-		append(ih.matchData.matchTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup+1], newTabular...)
+	ih.matchData.matchPeriodicTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup] =
+		append(ih.matchData.matchPeriodicTabularData[ih.basicHandler.roundNumber-1][ih.basicHandler.frameGroup], newTabular...)
 
 	ih.basicHandler.frameGroup = ih.basicHandler.frameGroup + 1
 	parser := *(ih.basicHandler.parser)
 	ih.lastUpdate = getRoundTime(parser, ih.basicHandler.roundStartTime, ih.basicHandler.tickRate)
 }
 
-var allPlayers = make(map[int]*playerMapping)
+//var allPlayers = make(map[int]*playerMapping)
 
 // exists returns whether the given file or directory exists
 func exists(path string) (bool, error) {
@@ -871,9 +1446,9 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 
 	mapMetadata := metadata.MapNameToMap[header.MapName]
 	var mapGenerator utils.MapGenerator
-	var allIconGenerators []IconGenerator
+	var allIconGenerators []PeriodicIconGenerator
 	var allStatGenerators []StatGenerator
-	var allTabularGenerators []TabularGenerator
+	var allTabularGenerators []PeriodicTabularGenerator
 	var basicHandler basicHandler
 
 	mapGenerator.Setup(header.MapName, imgSize)
@@ -885,17 +1460,17 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	var popHandler poppingGrenadeHandler
 	popHandler.SetBaseIcons()
 	popHandler.Register(&basicHandler)
-	allIconGenerators = append(allIconGenerators, &popHandler)
+	//allIconGenerators = append(allIconGenerators, &popHandler)
 
 	var bmbHandler bombHandler
 	bmbHandler.Register(&basicHandler)
 	allTabularGenerators = append(allTabularGenerators, &bmbHandler)
-	allIconGenerators = append(allIconGenerators, &bmbHandler)
+	//allIconGenerators = append(allIconGenerators, &bmbHandler)
 
-	var playerHandler playerInfoHandler
+	var playerHandler playerPeriodicInfoHandler
 	playerHandler.Register(&basicHandler)
 	allTabularGenerators = append(allTabularGenerators, &playerHandler)
-	allIconGenerators = append(allIconGenerators, &playerHandler)
+	//allIconGenerators = append(allIconGenerators, &playerHandler)
 
 	var infoHandler infoGenerationHandler
 	updateInterval := 2.0 //2s between framegroups
@@ -941,12 +1516,17 @@ func main() {
 
 }
 
-func writeToCSV(data [][]string, filePath string) {
+func writeToCSV(header []string, data [][]float64, filePath string) {
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, os.ModeAppend)
 	checkError(err)
 	writer := csv.NewWriter(file)
 
-	err = writer.WriteAll(data)
+	var writeData [][]string
+
+	writeData = append(writeData, header)
+	writeData = append(writeData, utils.FloatMatrixToString(data)...)
+
+	err = writer.WriteAll(writeData)
 	checkError(err)
 }
 
@@ -999,52 +1579,6 @@ func findIntInSlice(slice []int, number int) bool {
 		}
 	}
 	return false
-}
-
-func fillPlayerWeapons(player *common.Player) []string {
-	//"mainweapon", "secweapon", "flashbangs", "hassmoke", "hasmolotov", "hashe","armorvalue","hashelmet","hasdefusekit/hasc4",
-
-	weapons := []string{"0", "0", "0", "0", "0", "0", "0", "0", "0"}
-
-	primaryWeaponClasses := []int{2, 3, 4}
-	secondaryWeaponClasses := []int{1}
-
-	molotovAndIncendiary := []int{502, 503}
-
-	equipSlice := player.Weapons()
-	equipClass := 0
-	equipType := 0
-	for _, equip := range equipSlice {
-		equipClass = int(equip.Class())
-		equipType = int(equip.Type)
-		if findIntInSlice(primaryWeaponClasses, equipClass) {
-			weapons[0] = strconv.Itoa(equipType)
-		}
-		if findIntInSlice(secondaryWeaponClasses, equipClass) {
-			weapons[1] = strconv.Itoa(equipType)
-		}
-		if equipType == 504 { //flash
-			weapons[2] = strconv.Itoa(player.AmmoLeft[equip.AmmoType()])
-		}
-		if equipType == 505 { //smoke
-			weapons[3] = "1"
-		}
-		if findIntInSlice(molotovAndIncendiary, equipType) { //molotov or incendiary
-			weapons[4] = "1"
-		}
-		if equipType == 506 { //HE
-			weapons[5] = "1"
-		}
-		if equipType == 406 || equipType == 404 { //defuse kit / c4
-			weapons[8] = "1"
-		}
-
-	}
-	weapons[6] = strconv.Itoa(player.Armor())
-	if player.HasHelmet() {
-		weapons[7] = "1"
-	}
-	return weapons
 }
 
 func getRoundTime(p dem.Parser, roundStartTime float64, tickRate int) float64 {
