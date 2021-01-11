@@ -23,6 +23,7 @@ import (
 
 //struct to gather player related data
 type playerMapping struct {
+	currentSlot  int
 	playerObject *common.Player
 }
 
@@ -115,6 +116,11 @@ type FootstepSubscriber interface {
 	FootstepHandler(events.Footstep)
 }
 
+//Interface to ScoreUpdated event subscribers
+type ScoreUpdatedSubscriber interface {
+	ScoreUpdatedHandler(events.ScoreUpdated)
+}
+
 //Interface to HeExplode event subscribers
 type HeExplodeSubscriber interface {
 	HeExplodeHandler(events.HeExplode)
@@ -148,6 +154,16 @@ type PlayerHurtSubscriber interface {
 //Interface to WeaponReload event subscribers
 type WeaponReloadSubscriber interface {
 	WeaponReloadHandler(events.WeaponReload)
+}
+
+//Interface to IsWarmupPeriodChanged event subscribers
+type IsWarmupPeriodChangedSubscriber interface {
+	IsWarmupPeriodChangedHandler(events.IsWarmupPeriodChanged)
+}
+
+//Interface to PlayerTeamChange event subscribers
+type PlayerTeamChangeSubscriber interface {
+	PlayerTeamChangeHandler(events.PlayerTeamChange)
 }
 
 //basic shared handler for parsing
@@ -192,6 +208,9 @@ type basicHandler struct {
 	footstepHandlerID   dp.HandlerIdentifier
 	footstepSubscribers []FootstepSubscriber
 
+	scoreUpdatedHandlerID   dp.HandlerIdentifier
+	scoreUpdatedSubscribers []ScoreUpdatedSubscriber
+
 	heExplodeHandlerID   dp.HandlerIdentifier
 	heExplodeSubscribers []HeExplodeSubscriber
 
@@ -213,19 +232,24 @@ type basicHandler struct {
 	weaponReloadHandlerID   dp.HandlerIdentifier
 	weaponReloadSubscribers []WeaponReloadSubscriber
 
-	roundStartTime   float64
-	rootMatchPath    string
-	roundDirPath     string
-	roundWinner      string
-	roundTabularPath string
-	roundStatPath    string
-	currentTime      float64
-	roundNumber      int
-	frameGroup       int
-	isMatchStarted   bool
-	roundFreezeTime  bool
-	playerMappings   map[int]*playerMapping
-	sortedUserIDs    [][]int
+	isWarmupPeriodChangedHandlerID   dp.HandlerIdentifier
+	isWarmupPeriodChangedSubscribers []IsWarmupPeriodChangedSubscriber
+
+	playerTeamChangeHandlerID   dp.HandlerIdentifier
+	playerTeamChangeSubscribers []PlayerTeamChangeSubscriber
+
+	roundStartTime  float64
+	currentTime     float64
+	currentScore    string
+	roundNumber     int
+	frameGroup      int
+	isMatchStarted  bool
+	roundFreezeTime bool
+	roundWinner     string
+	matchPointTeam  string
+	isMatchEnded    bool
+	isValidRound    bool
+	playerMappings  []map[int]playerMapping
 }
 
 func (bh *basicHandler) Register(basicHand *basicHandler) error {
@@ -245,12 +269,11 @@ func (bh *basicHandler) RegisterBasicEvents() error {
 	return nil
 }
 
-func (bh *basicHandler) Setup(parser *dem.Parser, tickRate int, mapMetadata metadata.Map, rootMatchPath string) error {
+func (bh *basicHandler) Setup(parser *dem.Parser, tickRate int, mapMetadata metadata.Map) error {
 	bh.parser = parser
 	bh.tickRate = tickRate
 	bh.mapMetadata = mapMetadata
-	bh.rootMatchPath = rootMatchPath
-	bh.roundDirPath = rootMatchPath
+
 	return nil
 }
 
@@ -284,33 +307,54 @@ func (bh *basicHandler) RoundStartHandler(e events.RoundStart) {
 	parser := *(bh.parser)
 	gs := parser.GameState()
 
-	bh.roundFreezeTime = true
-	bh.roundWinner = ""
-	bh.frameGroup = 0
-	bh.isMatchStarted = true
-	bh.roundNumber = gs.TeamCounterTerrorists().Score() + gs.TeamTerrorists().Score() + 1
-	newScore := utils.PadLeft(strconv.Itoa(bh.roundNumber), "0", 2) + "_ct_" +
-		utils.PadLeft(strconv.Itoa(gs.TeamCounterTerrorists().Score()), "0", 2) +
-		"_t_" + utils.PadLeft(strconv.Itoa(gs.TeamTerrorists().Score()), "0", 2)
+	currentMappings := currentPlayerMappings(parser.GameState())
 
-	bh.roundDirPath = bh.rootMatchPath + "/" + newScore
-	bh.roundStartTime = bh.currentTime
-
-	for _, subscriber := range bh.roundStartSubscribers {
-		subscriber.RoundStartHandler(e)
+	if len(currentMappings) > 0 {
+		bh.isValidRound = true
+	} else {
+		bh.isValidRound = false
 	}
+	if bh.isValidRound {
+		tTeam := gs.TeamTerrorists()
+		ctTeam := gs.TeamCounterTerrorists()
 
-	bh.playerMappings = remakePlayerMappings(parser.GameState())
+		scoreDiff := utils.Abs((tTeam.Score() - ctTeam.Score()))
+		isTMatchPoint := (tTeam.Score() >= 15 && tTeam.Score()%3 == 0 && scoreDiff >= 1)
+		isCTMatchPoint := (ctTeam.Score() >= 15 && ctTeam.Score()%3 == 0 && scoreDiff >= 1)
+		if isTMatchPoint || isCTMatchPoint {
+			bh.matchPointTeam = bh.roundWinner
+		} else {
+			bh.matchPointTeam = ""
+		}
 
-	if bh.roundNumber-1 < len(bh.sortedUserIDs) {
-		bh.CropData(bh.roundNumber - 1)
+		bh.roundFreezeTime = true
+		bh.roundWinner = ""
+		bh.frameGroup = 0
+		bh.isMatchStarted = true
+		bh.roundNumber = gs.TeamCounterTerrorists().Score() + gs.TeamTerrorists().Score() + 1
+		bh.currentScore = utils.PadLeft(strconv.Itoa(bh.roundNumber), "0", 2) + "_ct_" +
+			utils.PadLeft(strconv.Itoa(gs.TeamCounterTerrorists().Score()), "0", 2) +
+			"_t_" + utils.PadLeft(strconv.Itoa(gs.TeamTerrorists().Score()), "0", 2)
+
+		bh.roundStartTime = bh.currentTime
+
+		if bh.roundNumber-1 < len(bh.playerMappings) {
+			bh.CropData(bh.roundNumber - 1)
+		}
+
+		bh.playerMappings = append(bh.playerMappings, currentMappings)
+
+		if !bh.isMatchEnded && bh.isMatchStarted {
+			for _, subscriber := range bh.roundStartSubscribers {
+				subscriber.RoundStartHandler(e)
+			}
+		}
 	}
-	bh.sortedUserIDs = append(bh.sortedUserIDs, sortPlayersByUserID(bh.playerMappings))
 
 }
 
 func (bh *basicHandler) CropData(index int) {
-	bh.sortedUserIDs = bh.sortedUserIDs[:index]
+	bh.playerMappings = bh.playerMappings[:index]
 }
 
 func (bh *basicHandler) RegisterRoundEndSubscriber(rs RoundEndSubscriber) {
@@ -333,17 +377,10 @@ func (bh *basicHandler) RoundEndHandler(e events.RoundEnd) {
 	} else {
 		bh.roundWinner = "invalid"
 	}
-	if bh.roundDirPath != bh.rootMatchPath {
-		fileWrite, err := os.Create(bh.roundDirPath + "/winner.txt")
-		checkError(err)
-		defer fileWrite.Close()
-		_, err = fileWrite.WriteString(bh.roundWinner)
-		checkError(err)
-
-	}
-
-	for _, subscriber := range bh.roundEndSubscribers {
-		subscriber.RoundEndHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.roundEndSubscribers {
+			subscriber.RoundEndHandler(e)
+		}
 	}
 
 }
@@ -360,8 +397,10 @@ func (bh *basicHandler) RegisterGrenadeEventIfSubscriber(rs GrenadeEventIfSubscr
 
 func (bh *basicHandler) GrenadeEventIfHandler(e events.GrenadeEventIf) {
 	bh.UpdateTime()
-	for _, subscriber := range bh.grenadeEventIfSubscribers {
-		subscriber.GrenadeEventIfHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.grenadeEventIfSubscribers {
+			subscriber.GrenadeEventIfHandler(e)
+		}
 	}
 }
 
@@ -378,9 +417,10 @@ func (bh *basicHandler) RegisterRoundFreezetimeEndSubscriber(rs RoundFreezetimeE
 func (bh *basicHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
 	bh.UpdateTime()
 	bh.roundFreezeTime = false
-
-	for _, subscriber := range bh.roundFreezeTimeEndSubscribers {
-		subscriber.RoundFreezetimeEndHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.roundFreezeTimeEndSubscribers {
+			subscriber.RoundFreezetimeEndHandler(e)
+		}
 	}
 }
 
@@ -396,9 +436,10 @@ func (bh *basicHandler) RegisterBombPlantedSubscriber(rs BombPlantedSubscriber) 
 
 func (bh *basicHandler) BombPlantedHandler(e events.BombPlanted) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.bombPlantedSubscribers {
-		subscriber.BombPlantedHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.bombPlantedSubscribers {
+			subscriber.BombPlantedHandler(e)
+		}
 	}
 }
 
@@ -414,9 +455,10 @@ func (bh *basicHandler) RegisterFrameDoneSubscriber(rs FrameDoneSubscriber) {
 
 func (bh *basicHandler) FrameDoneHandler(e events.FrameDone) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.frameDoneSubscribers {
-		subscriber.FrameDoneHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.frameDoneSubscribers {
+			subscriber.FrameDoneHandler(e)
+		}
 	}
 }
 
@@ -432,9 +474,14 @@ func (bh *basicHandler) RegisterRoundEndOfficialSubscriber(rs RoundEndOfficialSu
 
 func (bh *basicHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
 	bh.UpdateTime()
+	if bh.roundWinner == bh.matchPointTeam && bh.matchPointTeam != "" && bh.isMatchStarted {
+		bh.isMatchEnded = true
+	}
 
-	for _, subscriber := range bh.roundEndOfficialSubscribers {
-		subscriber.RoundEndOfficialHandler(e)
+	if bh.isMatchStarted {
+		for _, subscriber := range bh.roundEndOfficialSubscribers {
+			subscriber.RoundEndOfficialHandler(e)
+		}
 	}
 }
 
@@ -450,9 +497,10 @@ func (bh *basicHandler) RegisterBombDroppedSubscriber(rs BombDroppedSubscriber) 
 
 func (bh *basicHandler) BombDroppedHandler(e events.BombDropped) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.bombDroppedSubscribers {
-		subscriber.BombDroppedHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.bombDroppedSubscribers {
+			subscriber.BombDroppedHandler(e)
+		}
 	}
 }
 
@@ -468,9 +516,10 @@ func (bh *basicHandler) RegisterBombDefusedSubscriber(rs BombDefusedSubscriber) 
 
 func (bh *basicHandler) BombDefusedHandler(e events.BombDefused) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.bombDefusedSubscribers {
-		subscriber.BombDefusedHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.bombDefusedSubscribers {
+			subscriber.BombDefusedHandler(e)
+		}
 	}
 }
 
@@ -486,9 +535,10 @@ func (bh *basicHandler) RegisterFlashExplodeSubscriber(rs FlashExplodeSubscriber
 
 func (bh *basicHandler) FlashExplodeHandler(e events.FlashExplode) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.flashExplodeSubscribers {
-		subscriber.FlashExplodeHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.flashExplodeSubscribers {
+			subscriber.FlashExplodeHandler(e)
+		}
 	}
 }
 
@@ -504,9 +554,10 @@ func (bh *basicHandler) RegisterBombPickupSubscriber(rs BombPickupSubscriber) {
 
 func (bh *basicHandler) BombPickupHandler(e events.BombPickup) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.bombPickupSubscribers {
-		subscriber.BombPickupHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.bombPickupSubscribers {
+			subscriber.BombPickupHandler(e)
+		}
 	}
 }
 
@@ -522,9 +573,29 @@ func (bh *basicHandler) RegisterFootstepSubscriber(rs FootstepSubscriber) {
 
 func (bh *basicHandler) FootstepHandler(e events.Footstep) {
 	bh.UpdateTime()
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.footstepSubscribers {
+			subscriber.FootstepHandler(e)
+		}
+	}
+}
 
-	for _, subscriber := range bh.footstepSubscribers {
-		subscriber.FootstepHandler(e)
+func (bh *basicHandler) RegisterScoreUpdatedSubscriber(rs ScoreUpdatedSubscriber) {
+	parser := *(bh.parser)
+	if bh.scoreUpdatedHandlerID == nil {
+		bh.scoreUpdatedHandlerID = parser.RegisterEventHandler(bh.ScoreUpdatedHandler)
+	}
+
+	bh.scoreUpdatedSubscribers = append(bh.scoreUpdatedSubscribers, rs)
+
+}
+
+func (bh *basicHandler) ScoreUpdatedHandler(e events.ScoreUpdated) {
+	bh.UpdateTime()
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.scoreUpdatedSubscribers {
+			subscriber.ScoreUpdatedHandler(e)
+		}
 	}
 }
 
@@ -540,9 +611,10 @@ func (bh *basicHandler) RegisterHeExplodeSubscriber(rs HeExplodeSubscriber) {
 
 func (bh *basicHandler) HeExplodeHandler(e events.HeExplode) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.heExplodeSubscribers {
-		subscriber.HeExplodeHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.heExplodeSubscribers {
+			subscriber.HeExplodeHandler(e)
+		}
 	}
 }
 
@@ -558,9 +630,10 @@ func (bh *basicHandler) RegisterItemDropSubscriber(rs ItemDropSubscriber) {
 
 func (bh *basicHandler) ItemDropHandler(e events.ItemDrop) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.itemDropSubscribers {
-		subscriber.ItemDropHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.itemDropSubscribers {
+			subscriber.ItemDropHandler(e)
+		}
 	}
 }
 
@@ -576,9 +649,10 @@ func (bh *basicHandler) RegisterItemPickupSubscriber(rs ItemPickupSubscriber) {
 
 func (bh *basicHandler) ItemPickupHandler(e events.ItemPickup) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.itemPickupSubscribers {
-		subscriber.ItemPickupHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.itemPickupSubscribers {
+			subscriber.ItemPickupHandler(e)
+		}
 	}
 }
 
@@ -594,9 +668,10 @@ func (bh *basicHandler) RegisterKillSubscriber(rs KillSubscriber) {
 
 func (bh *basicHandler) KillHandler(e events.Kill) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.killSubscribers {
-		subscriber.KillHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.killSubscribers {
+			subscriber.KillHandler(e)
+		}
 	}
 }
 
@@ -612,9 +687,10 @@ func (bh *basicHandler) RegisterPlayerFlashedSubscriber(rs PlayerFlashedSubscrib
 
 func (bh *basicHandler) PlayerFlashedHandler(e events.PlayerFlashed) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.playerFlashedSubscribers {
-		subscriber.PlayerFlashedHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.playerFlashedSubscribers {
+			subscriber.PlayerFlashedHandler(e)
+		}
 	}
 }
 
@@ -630,9 +706,10 @@ func (bh *basicHandler) RegisterPlayerHurtSubscriber(rs PlayerHurtSubscriber) {
 
 func (bh *basicHandler) PlayerHurtHandler(e events.PlayerHurt) {
 	bh.UpdateTime()
-
-	for _, subscriber := range bh.playerHurtSubscribers {
-		subscriber.PlayerHurtHandler(e)
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.playerHurtSubscribers {
+			subscriber.PlayerHurtHandler(e)
+		}
 	}
 }
 
@@ -648,9 +725,48 @@ func (bh *basicHandler) RegisterWeaponReloadSubscriber(rs WeaponReloadSubscriber
 
 func (bh *basicHandler) WeaponReloadHandler(e events.WeaponReload) {
 	bh.UpdateTime()
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.weaponReloadSubscribers {
+			subscriber.WeaponReloadHandler(e)
+		}
+	}
+}
 
-	for _, subscriber := range bh.weaponReloadSubscribers {
-		subscriber.WeaponReloadHandler(e)
+func (bh *basicHandler) RegisterIsWarmupPeriodChangedSubscriber(rs IsWarmupPeriodChangedSubscriber) {
+	parser := *(bh.parser)
+	if bh.isWarmupPeriodChangedHandlerID == nil {
+		bh.isWarmupPeriodChangedHandlerID = parser.RegisterEventHandler(bh.IsWarmupPeriodChangedHandler)
+	}
+
+	bh.isWarmupPeriodChangedSubscribers = append(bh.isWarmupPeriodChangedSubscribers, rs)
+
+}
+
+func (bh *basicHandler) IsWarmupPeriodChangedHandler(e events.IsWarmupPeriodChanged) {
+	bh.UpdateTime()
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.isWarmupPeriodChangedSubscribers {
+			subscriber.IsWarmupPeriodChangedHandler(e)
+		}
+	}
+}
+
+func (bh *basicHandler) RegisterPlayerTeamChangeSubscriber(rs PlayerTeamChangeSubscriber) {
+	parser := *(bh.parser)
+	if bh.playerTeamChangeHandlerID == nil {
+		bh.playerTeamChangeHandlerID = parser.RegisterEventHandler(bh.PlayerTeamChangeHandler)
+	}
+
+	bh.playerTeamChangeSubscribers = append(bh.playerTeamChangeSubscribers, rs)
+
+}
+
+func (bh *basicHandler) PlayerTeamChangeHandler(e events.PlayerTeamChange) {
+	bh.UpdateTime()
+	if !bh.isMatchEnded && bh.isMatchStarted {
+		for _, subscriber := range bh.playerTeamChangeSubscribers {
+			subscriber.PlayerTeamChangeHandler(e)
+		}
 	}
 }
 
@@ -658,6 +774,10 @@ type poppingGrenadeHandler struct {
 	basicHandler   *basicHandler
 	activeGrenades []*grenadeTracker
 	baseIcons      map[common.EquipmentType]utils.Icon
+}
+
+func (ph *poppingGrenadeHandler) Update() {
+
 }
 
 func (ph *poppingGrenadeHandler) Register(bh *basicHandler) error {
@@ -772,39 +892,11 @@ func (ph *playerPeriodicInfoHandler) Update() {
 
 func (ph *playerPeriodicInfoHandler) updatePlayerInfo(playerInfoGatherers []IPeriodicPlayerInfoGatherer) {
 
-	tCount := 0
-	ctCount := 0
-	playerBasePos := 0
-	for _, userID := range ph.basicHandler.sortedUserIDs[len(ph.basicHandler.sortedUserIDs)-1] {
-		if _, ok := ph.basicHandler.playerMappings[userID]; ok {
-			player := ph.basicHandler.playerMappings[userID].playerObject
-			isCT := (player.Team == 3)
-			isTR := (player.Team == 2)
+	for _, playerMapping := range ph.basicHandler.playerMappings[ph.basicHandler.roundNumber-1] {
+		player := playerMapping.playerObject
 
-			if !isCT && tCount > 4 || isCT && ctCount > 4 {
-				fmt.Println("invalid team size")
-				break
-			}
-
-			if !(isCT || isTR) {
-				fmt.Println("invalid team")
-				break
-			}
-
-			if isCT {
-				playerBasePos = 5 + ctCount
-				ctCount++
-			}
-			if isTR {
-				playerBasePos = tCount
-				tCount++
-			}
-			for _, playerGatherer := range playerInfoGatherers {
-				playerGatherer.updatePlayer(player, playerBasePos)
-			}
-
-		} else {
-			fmt.Println("key not found", userID)
+		for _, playerGatherer := range playerInfoGatherers {
+			playerGatherer.updatePlayer(player, playerMapping.currentSlot)
 		}
 
 	}
@@ -952,10 +1044,10 @@ func (wg *weaponsGatherer) updatePlayer(player *common.Player, basePos int) {
 	for _, equip := range equipSlice {
 		equipClass = int(equip.Class())
 		equipType = int(equip.Type)
-		if findIntInSlice(primaryWeaponClasses, equipClass) {
+		if utils.FindIntInSlice(primaryWeaponClasses, equipClass) {
 			weapons[0] = float64(equipType)
 		}
-		if findIntInSlice(secondaryWeaponClasses, equipClass) {
+		if utils.FindIntInSlice(secondaryWeaponClasses, equipClass) {
 			weapons[1] = float64(equipType)
 		}
 		if equipType == 504 { //flash
@@ -964,7 +1056,7 @@ func (wg *weaponsGatherer) updatePlayer(player *common.Player, basePos int) {
 		if equipType == 505 { //smoke
 			weapons[3] = 1
 		}
-		if findIntInSlice(molotovAndIncendiary, equipType) { //molotov or incendiary
+		if utils.FindIntInSlice(molotovAndIncendiary, equipType) { //molotov or incendiary
 			weapons[4] = 1
 		}
 		if equipType == 506 { //HE
@@ -991,27 +1083,68 @@ func (wg *weaponsGatherer) GetPeriodicTabularInfo() ([]string, []float64) {
 }
 
 type statisticHolder struct {
-	statsHeaders []string
-	playerStats  []map[int][]float64
+	statsHeaders  []string
+	playerStats   []map[int][]float64
+	defaultValues []float64
 }
 
-func (kc statisticHolder) GetRoundStatistic(roundNumber int, userID int) ([]string, []float64) {
-	return kc.statsHeaders, kc.playerStats[roundNumber-1][userID]
-}
-
-type KDACalculator struct {
-	basicHandler *basicHandler
-	statisticHolder
+func (kc statisticHolder) GetRoundStatistic(roundNumber int, userID int) ([]string, []float64, error) {
+	return kc.statsHeaders, kc.playerStats[roundNumber-1][userID], nil
 }
 
 type PlayerStatisticCalculator interface {
 	CompositeEventHandler
-	IPlayersInfoGatherer
-	GetRoundStatistic(roundNumber int, userID int) ([]string, []float64) //stats header, stats
-	GetMatchStatistic(userID int) ([]string, []float64)                  //stats header, stats
+	GetRoundStatistic(roundNumber int, userID int) ([]string, []float64, error) //stats header, stats
+	GetMatchStatistic(userID int) ([]string, []float64, error)                  //stats header, stats
 }
 
-func (kc *KDACalculator) GetMatchStatistic(userID int) ([]string, []float64) {
+type KDATCalculator struct {
+	basicHandler *basicHandler
+	statisticHolder
+	killsToBeTraded    map[int][]KillToBeTraded //maps from killerID to a list of their kills
+	tradeIntervalLimit float64
+}
+
+type KillToBeTraded struct {
+	killerID    int
+	victimID    int
+	timeOfDeath float64
+}
+
+func (kc *KDATCalculator) processKillTradeInformation(e events.Kill) {
+	if e.Killer != nil {
+		killerID := e.Killer.UserID
+		victimID := e.Victim.UserID
+		var timeFromKill float64
+		var victimOfVictimID int
+		currentTime := kc.basicHandler.currentTime
+		if victimKills, ok := kc.killsToBeTraded[victimID]; ok {
+			for _, victimKill := range victimKills {
+				timeFromKill = currentTime - victimKill.timeOfDeath
+				if timeFromKill < kc.tradeIntervalLimit {
+					victimOfVictimID = victimKill.victimID
+					kc.playerStats[kc.basicHandler.roundNumber-1][victimOfVictimID][utils.IndexOf("WasTraded", kc.statsHeaders)] += 1
+					kc.playerStats[kc.basicHandler.roundNumber-1][killerID][utils.IndexOf("Trades", kc.statsHeaders)] += 1
+				}
+			}
+
+		}
+		kc.killsToBeTraded[killerID] = append(kc.killsToBeTraded[killerID],
+			KillToBeTraded{killerID: killerID, victimID: victimID, timeOfDeath: currentTime})
+	}
+
+}
+
+func (kc *KDATCalculator) addPlayerToBeTraded(killerID int, victimID int, timeOfDeath float64) {
+	kc.killsToBeTraded[killerID] = append(kc.killsToBeTraded[killerID],
+		KillToBeTraded{killerID: killerID, victimID: victimID, timeOfDeath: timeOfDeath})
+}
+
+func (kc *KDATCalculator) Setup(tradeIntervalLimit float64) {
+	kc.tradeIntervalLimit = tradeIntervalLimit
+}
+
+func (kc *KDATCalculator) GetMatchStatistic(userID int) ([]string, []float64, error) {
 	consolidatedStat := []float64{}
 	for _, roundStatMap := range kc.playerStats {
 		if playerStat, ok := roundStatMap[userID]; ok {
@@ -1019,43 +1152,139 @@ func (kc *KDACalculator) GetMatchStatistic(userID int) ([]string, []float64) {
 			consolidatedStat = utils.ElementWiseSum(consolidatedStat, playerStat)
 		}
 	}
-	return kc.statsHeaders, consolidatedStat
+	consolidatedStat[utils.IndexOf("KAST", kc.statsHeaders)] = consolidatedStat[utils.IndexOf("KAST", kc.statsHeaders)] / float64(len(kc.playerStats))
+	return kc.statsHeaders, consolidatedStat, nil
 }
 
-func (kc *KDACalculator) Register(bh *basicHandler) error {
+func (kc *KDATCalculator) Register(bh *basicHandler) error {
 	kc.basicHandler = bh
 	bh.RegisterRoundStartSubscriber(interface{}(kc).(RoundStartSubscriber))
 	bh.RegisterKillSubscriber(interface{}(kc).(KillSubscriber))
+	bh.RegisterRoundEndOfficialSubscriber(interface{}(kc).(RoundEndOfficialSubscriber))
+	kc.statsHeaders = []string{"Kills", "Assists", "Deaths", "Trades", "WasTraded", "KAST"}
+	kc.defaultValues = []float64{0, 0, 0, 0, 0, 0}
 	return nil
 }
 
-func (kc *KDACalculator) Init() {
-
-}
-
-func (kc *KDACalculator) AddNewRound() {
+func (kc *KDATCalculator) AddNewRound() {
 
 	kc.playerStats = append(kc.playerStats, make(map[int][]float64))
-	for _, userID := range kc.basicHandler.sortedUserIDs[len(kc.basicHandler.sortedUserIDs)-1] {
-		for range kc.statsHeaders {
-			kc.playerStats[len(kc.playerStats)-1][userID] = append(kc.playerStats[len(kc.playerStats)-1][userID], 0)
+	for _, playerMapping := range kc.basicHandler.playerMappings[kc.basicHandler.roundNumber-1] {
+		for i, _ := range kc.statsHeaders {
+			kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID] =
+				append(kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID], kc.defaultValues[i])
 		}
 
 	}
 
 }
 
-func (kc *KDACalculator) RoundStartHandler(e events.Kill) {
-	if kc.basicHandler.roundNumber-1 > len(kc.playerStats) {
+func (kc *KDATCalculator) RoundStartHandler(e events.RoundStart) {
+	if kc.basicHandler.roundNumber-1 < len(kc.playerStats) {
+		kc.playerStats = kc.playerStats[:kc.basicHandler.roundNumber-1]
+	}
+	kc.killsToBeTraded = make(map[int][]KillToBeTraded)
+	kc.AddNewRound()
+}
+
+func (kc *KDATCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+	var playerKills float64
+	var playerAssists float64
+	var playerDeath float64
+	var playerWasTraded float64
+	if kc.basicHandler.isMatchStarted {
+		for _, playerMapping := range kc.basicHandler.playerMappings[kc.basicHandler.roundNumber-1] {
+			playerKills = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("Kills", kc.statsHeaders)]
+			playerAssists = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("Assists", kc.statsHeaders)]
+			playerDeath = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("Deaths", kc.statsHeaders)]
+			playerWasTraded = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("WasTraded", kc.statsHeaders)]
+
+			if playerKills > 0 || playerAssists > 0 || playerDeath == 0 || playerWasTraded > 0 {
+				kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("KAST", kc.statsHeaders)] = 1
+			}
+
+		}
+	}
+
+}
+
+func (kc *KDATCalculator) KillHandler(e events.Kill) {
+	if kc.basicHandler.isMatchStarted {
+
+		if e.Killer != nil {
+			kc.playerStats[kc.basicHandler.roundNumber-1][e.Killer.UserID][utils.IndexOf("Kills", kc.statsHeaders)] += 1 //add kill
+		}
+
+		if e.Assister != nil {
+			kc.playerStats[kc.basicHandler.roundNumber-1][e.Assister.UserID][utils.IndexOf("Assists", kc.statsHeaders)] += 1 //add assist
+		}
+
+		if e.Victim != nil {
+			kc.playerStats[kc.basicHandler.roundNumber-1][e.Victim.UserID][utils.IndexOf("Deaths", kc.statsHeaders)] += 1 //add death
+		}
+
+		kc.processKillTradeInformation(e)
+
+	}
+
+}
+
+type ADRCalculator struct {
+	basicHandler *basicHandler
+	statisticHolder
+}
+
+func (kc *ADRCalculator) GetMatchStatistic(userID int) ([]string, []float64, error) {
+	consolidatedStat := []float64{}
+	for _, roundStatMap := range kc.playerStats {
+		if playerStat, ok := roundStatMap[userID]; ok {
+
+			consolidatedStat = utils.ElementWiseSum(consolidatedStat, playerStat)
+
+		}
+
+	}
+	consolidatedStat = utils.ElementWiseDivision(consolidatedStat, float64(len(kc.playerStats)))
+	return kc.statsHeaders, consolidatedStat, nil
+}
+
+func (kc *ADRCalculator) Register(bh *basicHandler) error {
+	kc.basicHandler = bh
+	bh.RegisterRoundStartSubscriber(interface{}(kc).(RoundStartSubscriber))
+	bh.RegisterPlayerHurtSubscriber(interface{}(kc).(PlayerHurtSubscriber))
+	kc.statsHeaders = []string{"ADR"}
+	return nil
+}
+
+func (kc *ADRCalculator) AddNewRound() {
+
+	kc.playerStats = append(kc.playerStats, make(map[int][]float64))
+	for _, playerMapping := range kc.basicHandler.playerMappings[kc.basicHandler.roundNumber-1] {
+		for range kc.statsHeaders {
+			kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID] =
+				append(kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID], 0)
+		}
+
+	}
+
+}
+
+func (kc *ADRCalculator) RoundStartHandler(e events.RoundStart) {
+	if kc.basicHandler.roundNumber-1 < len(kc.playerStats) {
 		kc.playerStats = kc.playerStats[:kc.basicHandler.roundNumber-1]
 	}
 	kc.AddNewRound()
 }
 
-func (kc *KDACalculator) KillHandler(e events.Kill) {
-	kc.playerStats[kc.basicHandler.roundNumber-1][e.Killer.UserID][0] += 1   //add kill
-	kc.playerStats[kc.basicHandler.roundNumber-1][e.Assister.UserID][1] += 1 //add assist
-	kc.playerStats[kc.basicHandler.roundNumber-1][e.Victim.UserID][2] += 1   //add death
+func (kc *ADRCalculator) PlayerHurtHandler(e events.PlayerHurt) {
+
+	if e.Attacker != nil {
+		if _, ok := kc.playerStats[kc.basicHandler.roundNumber-1][e.Attacker.UserID]; !ok {
+			fmt.Println("nokey")
+		}
+		kc.playerStats[kc.basicHandler.roundNumber-1][e.Attacker.UserID][0] += float64(e.HealthDamageTaken) //add damage
+	}
+
 }
 
 type playersIconGatherer struct {
@@ -1093,11 +1322,11 @@ func (bg *basicPlayerPositionGatherer) updatePlayer(player *common.Player, baseP
 			icon = "terrorist_"
 
 		}
-		playerCount := basePos % 5
+		playerNumber := basePos%5 + 1 //count 1-5 tr, 6-10 ct
 
-		newIcon := utils.Icon{X: x, Y: y, IconName: icon + strconv.Itoa(playerCount), Rotate: float64(player.ViewDirectionX())} //t or ct icon
+		newIcon := utils.Icon{X: x, Y: y, IconName: icon + strconv.Itoa(playerNumber), Rotate: float64(player.ViewDirectionX())} //t or ct icon
 		bg.playersIconGatherer.playersIcons = append(bg.playersIconGatherer.playersIcons, newIcon)
-		newIcon = utils.Icon{X: x, Y: y, IconName: strconv.Itoa(playerCount)}
+		newIcon = utils.Icon{X: x, Y: y, IconName: strconv.Itoa(playerNumber)}
 		bg.playersIconGatherer.playersIcons = append(bg.playersIconGatherer.playersIcons, newIcon)
 	}
 
@@ -1200,73 +1429,125 @@ func (md *matchData) AddNewFrameGroup(roundNumber int) {
 }
 
 type infoGenerationHandler struct {
-	basicHandler         *basicHandler
-	frameDoneHandlerID   dp.HandlerIdentifier
-	generationIndex      int
-	lastUpdate           float64
-	isNewRound           bool
-	updateInterval       float64
-	roundEndRegistered   bool //set to true after processing the first frame subsequent to winner callout
-	allIconGenerators    *[]PeriodicIconGenerator
-	allTabularGenerators *[]PeriodicTabularGenerator
-	allStatGenerators    *[]StatGenerator
-	mapGenerator         utils.MapGenerator
-	matchData            *matchData
-	imgSize              int
+	basicHandler            *basicHandler
+	frameDoneHandlerID      dp.HandlerIdentifier
+	generationIndex         int
+	lastUpdate              float64
+	isNewRound              bool
+	updateInterval          float64
+	roundEndRegistered      bool //set to true after generating roundendofficial info
+	matchEndRegisted        bool
+	allIconGenerators       *[]PeriodicIconGenerator
+	allTabularGenerators    *[]PeriodicTabularGenerator
+	allStatGenerators       *[]StatGenerator
+	allPlayerStatCalculator *[]PlayerStatisticCalculator
+	mapGenerator            utils.MapGenerator
+	matchData               *matchData
+	imgSize                 int
+
+	rootMatchPath    string
+	roundDirPath     string
+	roundTabularPath string
+	roundStatPath    string
+	playerStatPath   string
 }
 
 func (ih *infoGenerationHandler) Register(bh *basicHandler) error {
 	ih.basicHandler = bh
+
 	bh.RegisterRoundStartSubscriber(interface{}(ih).(RoundStartSubscriber))
 	bh.RegisterFrameDoneSubscriber(interface{}(ih).(FrameDoneSubscriber))
 	bh.RegisterRoundEndOfficialSubscriber(interface{}(ih).(RoundEndOfficialSubscriber))
+	bh.RegisterPlayerTeamChangeSubscriber(interface{}(ih).(PlayerTeamChangeSubscriber))
+	bh.RegisterIsWarmupPeriodChangedSubscriber(interface{}(ih).(IsWarmupPeriodChangedSubscriber))
+
 	return nil
 }
 
-// func (ih *infoGenerationHandler) Unregister(bh *basicHandler) error {
-// 	ih.basicHandler = bh
-// 	bh.RegisterCompositeEventHandler(interface{}(ih).(CompositeEventHandler))
-// 	return nil
-// }
-
 func (ih *infoGenerationHandler) RoundStartHandler(e events.RoundStart) {
+	if !ih.basicHandler.isMatchEnded {
+		ih.roundDirPath = ih.rootMatchPath + "/" + ih.basicHandler.currentScore
+		dirExists, _ := exists(ih.roundDirPath)
+		ih.generationIndex = 0
+		ih.roundEndRegistered = false
 
-	dirExists, _ := exists(ih.basicHandler.roundDirPath)
-	ih.generationIndex = 0
-	ih.roundEndRegistered = false
-	if !dirExists {
-		err := os.MkdirAll(ih.basicHandler.roundDirPath, 0700)
+		if !dirExists {
+			err := os.MkdirAll(ih.roundDirPath, 0700)
+			checkError(err)
+		} else {
+			RemoveContents(ih.roundDirPath)
+		}
+
+		ih.roundTabularPath = ih.roundDirPath + "/periodic_data.csv"
+		ih.roundStatPath = ih.roundDirPath + "/statistics.csv"
+		ih.playerStatPath = ih.roundDirPath + "/player_statistics.csv"
+		ih.isNewRound = true
+		roundPeriodicDataCSV, err := os.Create(ih.roundTabularPath)
 		checkError(err)
-	} else {
-		RemoveContents(ih.basicHandler.roundDirPath)
+		defer roundPeriodicDataCSV.Close()
+
+		roundStatCSV, err := os.Create(ih.roundStatPath)
+		checkError(err)
+		defer roundStatCSV.Close()
+
+		playerStatCSV, err := os.Create(ih.playerStatPath)
+		checkError(err)
+		defer playerStatCSV.Close()
+
+		ih.lastUpdate = 0.0
+
+		if len(ih.matchData.matchIcons) > ih.basicHandler.roundNumber-1 { // match restart or round rollback
+			ih.matchData.CropData(ih.basicHandler.roundNumber - 1)
+			ih.matchData.AddNewRound()
+		} else if len(ih.matchData.matchIcons) < ih.basicHandler.roundNumber-1 {
+			fmt.Println("missing match data")
+		} else {
+			ih.matchData.AddNewRound()
+		}
 	}
-	ih.basicHandler.roundTabularPath = ih.basicHandler.roundDirPath + "/periodic_data.csv"
-	ih.basicHandler.roundStatPath = ih.basicHandler.roundDirPath + "/statistics.csv"
-	ih.isNewRound = true
-	roundPeriodicDataCSV, err := os.Create(ih.basicHandler.roundTabularPath)
-	checkError(err)
-	defer roundPeriodicDataCSV.Close()
 
-	roundStatCSV, err := os.Create(ih.basicHandler.roundStatPath)
-	checkError(err)
-	defer roundStatCSV.Close()
+}
 
-	ih.lastUpdate = 0.0
+func (ih *infoGenerationHandler) GetFullRoundStatistics() (data [][]string) {
+	var tempHeader []string
+	var tempData []float64
+	var err error
+	var stringData []string
+	var framedData [10][]string
+	firstPlayer := true
+	data = append(data, []string{"Name"})
+	for _, playerMapping := range ih.basicHandler.playerMappings[ih.basicHandler.roundNumber-1] {
+		player := playerMapping.playerObject
 
-	if len(ih.matchData.matchIcons) > ih.basicHandler.roundNumber-1 { // match restart or round rollback
-		ih.matchData.CropData(ih.basicHandler.roundNumber - 1)
-		ih.matchData.AddNewRound()
-	} else if len(ih.matchData.matchIcons) < ih.basicHandler.roundNumber-1 {
-		fmt.Println("missing match data")
-	} else {
-		ih.matchData.AddNewRound()
+		for j, playerStatCalculator := range *ih.allPlayerStatCalculator {
+			tempHeader, tempData, err = playerStatCalculator.GetRoundStatistic(ih.basicHandler.roundNumber, player.UserID)
+
+			checkError(err)
+
+			if j == 0 {
+
+				stringData = append([]string{playerMapping.playerObject.Name}, utils.FloatSliceToString(tempData)...)
+			} else {
+				stringData = append(stringData, utils.FloatSliceToString(tempData)...)
+			}
+
+			if firstPlayer {
+				data[0] = append(data[0], tempHeader...)
+			}
+
+		}
+		framedData[playerMapping.currentSlot] = append(framedData[playerMapping.currentSlot], stringData...)
+		firstPlayer = false
+
 	}
+	data = append(data, framedData[:]...)
+	return data
 
 }
 
 func (ih *infoGenerationHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
 
-	if ih.basicHandler.roundWinner != "" && ih.basicHandler.isMatchStarted {
+	if ih.basicHandler.roundWinner != "" && !ih.matchEndRegisted {
 		fmt.Println("Generating round ", ih.basicHandler.roundNumber)
 
 		var tempHeader []string
@@ -1274,12 +1555,26 @@ func (ih *infoGenerationHandler) RoundEndOfficialHandler(e events.RoundEndOffici
 		var newHeaderStat []string
 		var newStat []float64
 		var err error
+
+		if ih.roundDirPath != ih.rootMatchPath {
+			fileWrite, err := os.Create(ih.roundDirPath + "/winner.txt")
+			checkError(err)
+			defer fileWrite.Close()
+			_, err = fileWrite.WriteString(ih.basicHandler.roundWinner)
+			checkError(err)
+
+		}
+
 		for _, statGenerator := range *ih.allStatGenerators {
-			tempHeader, tempData, err = statGenerator.GetStatistics()
+			newHeaderStat, newStat, err = statGenerator.GetStatistics()
 			checkError(err)
 			newHeaderStat = append(newHeaderStat, tempHeader...)
 			newStat = append(newStat, tempData...)
+
 		}
+		generalStatistics := append([][]string{newHeaderStat}, utils.FloatSliceToString(newStat))
+
+		playerStatistics := ih.GetFullRoundStatistics()
 
 		if ih.basicHandler.roundNumber == 1 && len(*ih.allStatGenerators) > 0 {
 			ih.matchData.matchStatisticsHeaders = nil
@@ -1292,14 +1587,84 @@ func (ih *infoGenerationHandler) RoundEndOfficialHandler(e events.RoundEndOffici
 				newStat...)
 		}
 
+		allTabularData := append([][]string{ih.matchData.matchPeriodicTabularDataHeaders}, utils.FloatMatrixToString(ih.matchData.matchPeriodicTabularData[ih.basicHandler.roundNumber-1])...)
+
 		generateRoundMaps(ih.mapGenerator, ih.matchData.matchIcons[ih.basicHandler.roundNumber-1],
-			ih.basicHandler.roundDirPath, ih.imgSize)
-		writeToCSV(ih.matchData.matchPeriodicTabularDataHeaders, ih.matchData.matchPeriodicTabularData[ih.basicHandler.roundNumber-1],
-			ih.basicHandler.roundTabularPath)
-		writeToCSV(ih.matchData.matchStatisticsHeaders, ih.matchData.matchStatistics[ih.basicHandler.roundNumber:],
-			ih.basicHandler.roundStatPath)
+			ih.roundDirPath, ih.imgSize)
+		writeToCSV(allTabularData, ih.roundTabularPath)
+		writeToCSV(generalStatistics, ih.roundStatPath)
+		writeToCSV(playerStatistics, ih.playerStatPath)
+
+		ih.checkAndGenerateMatchEndStatistics()
 		ih.roundEndRegistered = true
 	}
+}
+
+func (ih *infoGenerationHandler) checkAndGenerateMatchEndStatistics() {
+
+	if ih.basicHandler.isMatchEnded {
+		fmt.Println("Generating match statistics")
+		if ih.roundDirPath != ih.rootMatchPath {
+			data := ih.GetFullMatchStatistics()
+			fileWrite, err := os.Create(ih.rootMatchPath + "/match_statistics.txt")
+			checkError(err)
+			writer := csv.NewWriter(fileWrite)
+
+			err = writer.WriteAll(data)
+			checkError(err)
+			defer fileWrite.Close()
+			ih.matchEndRegisted = true
+		}
+	}
+
+}
+
+func (ih *infoGenerationHandler) PlayerTeamChangeHandler(e events.PlayerTeamChange) {
+	if _, ok := ih.basicHandler.playerMappings[ih.basicHandler.roundNumber-1][e.Player.UserID]; !ok {
+		fmt.Println("PlayerTeamChange")
+	}
+
+}
+
+func (ih *infoGenerationHandler) IsWarmupPeriodChangedHandler(e events.IsWarmupPeriodChanged) {
+	fmt.Println("WarmUpPeriodChanged")
+}
+
+func (ih *infoGenerationHandler) GetFullMatchStatistics() (data [][]string) {
+	var tempHeader []string
+	var tempData []float64
+	var err error
+	var stringData []string
+	var framedData [10][]string
+	firstPlayer := true
+	data = append(data, []string{"Name"})
+	for _, playerMapping := range ih.basicHandler.playerMappings[ih.basicHandler.roundNumber-1] {
+		player := playerMapping.playerObject
+
+		for j, playerStatCalculator := range *ih.allPlayerStatCalculator {
+			tempHeader, tempData, err = playerStatCalculator.GetMatchStatistic(player.UserID)
+
+			checkError(err)
+
+			if j == 0 {
+
+				stringData = append([]string{playerMapping.playerObject.Name}, utils.FloatSliceToString(tempData)...)
+			} else {
+				stringData = append(stringData, utils.FloatSliceToString(tempData)...)
+			}
+
+			if firstPlayer {
+				data[0] = append(data[0], tempHeader...)
+			}
+
+		}
+		framedData[playerMapping.currentSlot] = append(framedData[playerMapping.currentSlot], stringData...)
+		firstPlayer = false
+
+	}
+	data = append(data, framedData[:]...)
+	return data
+
 }
 
 func (ih *infoGenerationHandler) FrameDoneHandler(e events.FrameDone) {
@@ -1323,18 +1688,21 @@ func (ih *infoGenerationHandler) isReadyForProcessing() bool {
 	return false
 }
 
-func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, allIconGenerators *[]PeriodicIconGenerator, allTabularGenerators *[]PeriodicTabularGenerator,
-	allStatGenerators *[]StatGenerator) error {
+func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, rootMatchPath string, allIconGenerators *[]PeriodicIconGenerator, allTabularGenerators *[]PeriodicTabularGenerator,
+	allStatGenerators *[]StatGenerator, allPlayerStatCalculators *[]PlayerStatisticCalculator) error {
 
 	var mapGenerator utils.MapGenerator
 	mapGenerator.Setup(ih.basicHandler.mapMetadata.Name, imgSize)
 	ih.mapGenerator = mapGenerator
 	ih.updateInterval = updateInterval
 	ih.matchData = new(matchData)
+	ih.rootMatchPath = rootMatchPath
+	ih.roundDirPath = rootMatchPath
 
 	ih.allIconGenerators = allIconGenerators
 	ih.allTabularGenerators = allTabularGenerators
 	ih.allStatGenerators = allStatGenerators
+	ih.allPlayerStatCalculator = allPlayerStatCalculators
 
 	return nil
 }
@@ -1442,20 +1810,31 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 		checkError(err)
 	}
 
-	imgSize := 800
+	imgSize := 500
 
 	mapMetadata := metadata.MapNameToMap[header.MapName]
 	var mapGenerator utils.MapGenerator
 	var allIconGenerators []PeriodicIconGenerator
 	var allStatGenerators []StatGenerator
 	var allTabularGenerators []PeriodicTabularGenerator
+	var allPlayerStatCalculators []PlayerStatisticCalculator
 	var basicHandler basicHandler
 
 	mapGenerator.Setup(header.MapName, imgSize)
 
-	basicHandler.Setup(&p, tickRate, mapMetadata, rootMatchPath)
+	basicHandler.Setup(&p, tickRate, mapMetadata)
 	basicHandler.RegisterBasicEvents()
 	allTabularGenerators = append(allTabularGenerators, &basicHandler)
+
+	tradeIntervalLimit := 5.0
+	var kdatHandler KDATCalculator
+	kdatHandler.Register(&basicHandler)
+	kdatHandler.Setup(tradeIntervalLimit)
+	allPlayerStatCalculators = append(allPlayerStatCalculators, &kdatHandler)
+
+	var adrHandler ADRCalculator
+	adrHandler.Register(&basicHandler)
+	allPlayerStatCalculators = append(allPlayerStatCalculators, &adrHandler)
 
 	var popHandler poppingGrenadeHandler
 	popHandler.SetBaseIcons()
@@ -1473,9 +1852,9 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	//allIconGenerators = append(allIconGenerators, &playerHandler)
 
 	var infoHandler infoGenerationHandler
-	updateInterval := 2.0 //2s between framegroups
+	updateInterval := 1.5 //1.5s between framegroups
 	infoHandler.Register(&basicHandler)
-	infoHandler.Setup(imgSize, updateInterval, &allIconGenerators, &allTabularGenerators, &allStatGenerators)
+	infoHandler.Setup(imgSize, updateInterval, rootMatchPath, &allIconGenerators, &allTabularGenerators, &allStatGenerators, &allPlayerStatCalculators)
 
 	err = p.ParseToEnd()
 	p.Close()
@@ -1516,32 +1895,29 @@ func main() {
 
 }
 
-func writeToCSV(header []string, data [][]float64, filePath string) {
+func writeToCSV(data [][]string, filePath string) {
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, os.ModeAppend)
 	checkError(err)
 	writer := csv.NewWriter(file)
 
-	var writeData [][]string
-
-	writeData = append(writeData, header)
-	writeData = append(writeData, utils.FloatMatrixToString(data)...)
-
-	err = writer.WriteAll(writeData)
+	err = writer.WriteAll(data)
 	checkError(err)
+	defer file.Close()
 }
 
-func remakePlayerMappings(gs dem.GameState) map[int]*playerMapping {
-	newAllPlayers := make(map[int]*playerMapping)
+func currentPlayerMappings(gs dem.GameState) map[int]playerMapping {
+	newAllPlayers := make(map[int]playerMapping)
 	players := gs.Participants().Playing()
 	ctCount := 0
 	tCount := 0
+	playerBasePos := 0
 	for _, player := range players {
 		isCT := (player.Team == 3)
 		isTR := (player.Team == 2)
 
-		if !isCT && tCount > 4 || isCT && ctCount > 4 {
+		if isTR && tCount > 4 || isCT && ctCount > 4 {
 			fmt.Println("invalid team size")
-			break
+			return make(map[int]playerMapping)
 		}
 
 		if !(isCT || isTR) {
@@ -1550,19 +1926,19 @@ func remakePlayerMappings(gs dem.GameState) map[int]*playerMapping {
 		}
 
 		if isCT {
-
+			playerBasePos = ctCount + 5
 			ctCount++
 		} else if isTR {
-
+			playerBasePos = tCount
 			tCount++
 		}
-		newAllPlayers[player.UserID] = &playerMapping{playerObject: player}
+		newAllPlayers[player.UserID] = playerMapping{playerObject: player, currentSlot: playerBasePos}
 	}
 
 	return newAllPlayers
 }
 
-func sortPlayersByUserID(allPlayers map[int]*playerMapping) []int {
+func sortPlayersByUserID(allPlayers map[int]playerMapping) []int {
 
 	var keys []int
 	for userID := range allPlayers {
@@ -1570,15 +1946,6 @@ func sortPlayersByUserID(allPlayers map[int]*playerMapping) []int {
 	}
 	sort.Ints(keys)
 	return keys
-}
-
-func findIntInSlice(slice []int, number int) bool {
-	for _, sliceNumber := range slice {
-		if sliceNumber == number {
-			return true
-		}
-	}
-	return false
 }
 
 func getRoundTime(p dem.Parser, roundStartTime float64, tickRate int) float64 {
