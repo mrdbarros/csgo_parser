@@ -29,27 +29,32 @@ func SliceSum(data []float64) float64 {
 }
 
 func ElementWiseSum(dataIn1 []float64, dataIn2 []float64) (dataOut []float64) {
-	dataOut = dataIn1
+	dataOut = make([]float64, len(dataIn2))
+
 	if len(dataIn1) > 0 {
+		copy(dataOut, dataIn1)
 		for i, element := range dataIn2 {
 			dataOut[i] += element
 		}
 		return dataOut
+	} else {
+		copy(dataOut, dataIn2)
 	}
 
-	return dataIn2
+	return dataOut
 
 }
 
 func ElementWiseDivision(dataIn1 []float64, factor float64) (dataOut []float64) {
-	dataOut = dataIn1
+	dataOut = make([]float64, len(dataIn1))
 	if len(dataIn1) > 0 {
+		copy(dataOut, dataIn1)
 		for i := range dataIn1 {
 			dataOut[i] *= 1 / factor
 		}
 		return dataOut
 	}
-	return dataIn1
+	return dataOut
 
 }
 

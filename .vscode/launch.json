@@ -5,6 +5,19 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "DesktopFile",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${fileDirname}",
+      "env": {},
+      "args": ["-mode=file",
+        "/home/marcel/projetos/data/csgo_analyze/replays/0/2021-01-16__0302__1__10470498__de_inferno__timewhite__vs__c4base.dem",
+        "/home/marcel/projetos/data/csgo_analyze/processed/gc/",
+        128,
+      ]
+    },
+    {
       "name": "Desktop",
       "type": "go",
       "request": "launch",

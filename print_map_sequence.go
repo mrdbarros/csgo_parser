@@ -1,15 +1,22 @@
 package main
 
 import (
+	"crypto/sha256"
+	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"image/jpeg"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	dp "github.com/markus-wa/godispatch"
 
@@ -171,6 +178,7 @@ type basicHandler struct {
 	parser      *dem.Parser
 	tickRate    int
 	mapMetadata metadata.Map
+	statisticHolder
 
 	roundStartHandlerID   dp.HandlerIdentifier
 	roundStartSubscribers []RoundStartSubscriber
@@ -238,18 +246,21 @@ type basicHandler struct {
 	playerTeamChangeHandlerID   dp.HandlerIdentifier
 	playerTeamChangeSubscribers []PlayerTeamChangeSubscriber
 
-	roundStartTime  float64
-	currentTime     float64
-	currentScore    string
-	roundNumber     int
-	frameGroup      int
-	isMatchStarted  bool
-	roundFreezeTime bool
-	roundWinner     string
-	matchPointTeam  string
-	isMatchEnded    bool
-	isValidRound    bool
-	playerMappings  []map[int]playerMapping
+	roundStartTime          float64
+	currentTime             float64
+	currentScore            string
+	roundNumber             int
+	frameGroup              int
+	isMatchStarted          bool
+	roundFreezeTime         bool
+	roundWinner             string
+	matchPointTeam          string
+	isMatchEnded            bool
+	isValidRound            bool
+	terroristFirstTeamscore int
+	ctFirstTeamScore        int
+	playerMappings          []map[uint64]playerMapping
+	matchDatetime           time.Time
 }
 
 func (bh *basicHandler) Register(basicHand *basicHandler) error {
@@ -266,13 +277,17 @@ func (bh *basicHandler) RegisterBasicEvents() error {
 	bh.roundStartHandlerID = parser.RegisterEventHandler(bh.RoundStartHandler)
 	bh.roundEndHandlerID = parser.RegisterEventHandler(bh.RoundEndHandler)
 	bh.roundFreezeTimeEndHandlerID = parser.RegisterEventHandler(bh.RoundFreezetimeEndHandler)
+	bh.playerTeamChangeHandlerID = parser.RegisterEventHandler(bh.PlayerTeamChangeHandler)
 	return nil
 }
 
-func (bh *basicHandler) Setup(parser *dem.Parser, tickRate int, mapMetadata metadata.Map) error {
+func (bh *basicHandler) Setup(parser *dem.Parser, tickRate int, mapMetadata metadata.Map, matchDateTime time.Time) error {
 	bh.parser = parser
 	bh.tickRate = tickRate
 	bh.mapMetadata = mapMetadata
+	bh.statisticHolder.baseStatsHeaders = []string{"Rounds", "Rounds_T", "Rounds_CT"}
+	bh.basicHandler = bh
+	bh.matchDatetime = matchDateTime
 
 	return nil
 }
@@ -309,7 +324,7 @@ func (bh *basicHandler) RoundStartHandler(e events.RoundStart) {
 
 	currentMappings := currentPlayerMappings(parser.GameState())
 
-	if len(currentMappings) > 0 {
+	if len(currentMappings) > 0 && !bh.isMatchEnded {
 		bh.isValidRound = true
 	} else {
 		bh.isValidRound = false
@@ -321,6 +336,9 @@ func (bh *basicHandler) RoundStartHandler(e events.RoundStart) {
 		scoreDiff := utils.Abs((tTeam.Score() - ctTeam.Score()))
 		isTMatchPoint := (tTeam.Score() >= 15 && tTeam.Score()%3 == 0 && scoreDiff >= 1)
 		isCTMatchPoint := (ctTeam.Score() >= 15 && ctTeam.Score()%3 == 0 && scoreDiff >= 1)
+		if bh.roundNumber == 29 {
+			fmt.Println("A")
+		}
 		if isTMatchPoint || isCTMatchPoint {
 			bh.matchPointTeam = bh.roundWinner
 		} else {
@@ -338,19 +356,29 @@ func (bh *basicHandler) RoundStartHandler(e events.RoundStart) {
 
 		bh.roundStartTime = bh.currentTime
 
-		if bh.roundNumber-1 < len(bh.playerMappings) {
-			bh.CropData(bh.roundNumber - 1)
-		}
-
-		bh.playerMappings = append(bh.playerMappings, currentMappings)
-
 		if !bh.isMatchEnded && bh.isMatchStarted {
+			if bh.roundNumber-1 < len(bh.playerMappings) {
+				bh.CropData(bh.roundNumber - 1)
+			}
+
+			bh.playerMappings = append(bh.playerMappings, currentMappings)
+
 			for _, subscriber := range bh.roundStartSubscribers {
 				subscriber.RoundStartHandler(e)
 			}
 		}
 	}
 
+}
+
+func (bh *basicHandler) getPlayersAlive(team common.Team) (playersAlive []*common.Player) {
+	for _, playerMapping := range bh.playerMappings[bh.roundNumber-1] {
+		player := playerMapping.playerObject
+		if player.Team == team && player.IsAlive() {
+			playersAlive = append(playersAlive, player)
+		}
+	}
+	return playersAlive
 }
 
 func (bh *basicHandler) CropData(index int) {
@@ -370,14 +398,31 @@ func (bh *basicHandler) RegisterRoundEndSubscriber(rs RoundEndSubscriber) {
 func (bh *basicHandler) RoundEndHandler(e events.RoundEnd) {
 	bh.UpdateTime()
 	winTeam := e.Winner
+	tPoint := 0
+	ctPoint := 0
 	if winTeam == 2 {
 		bh.roundWinner = "t"
+		tPoint += 1
 	} else if winTeam == 3 {
 		bh.roundWinner = "ct"
+		ctPoint += 1
 	} else {
 		bh.roundWinner = "invalid"
 	}
-	if !bh.isMatchEnded && bh.isMatchStarted {
+
+	gs := (*bh.parser).GameState()
+	if bh.roundNumber > 15 {
+		bh.terroristFirstTeamscore = gs.TeamCounterTerrorists().Score() + ctPoint
+		bh.ctFirstTeamScore = gs.TeamTerrorists().Score() + tPoint
+	} else {
+		bh.terroristFirstTeamscore = gs.TeamTerrorists().Score() + tPoint
+		bh.ctFirstTeamScore = gs.TeamCounterTerrorists().Score() + ctPoint
+	}
+	if bh.roundWinner == bh.matchPointTeam && bh.matchPointTeam != "" && bh.isMatchStarted {
+		bh.isMatchEnded = true
+	}
+
+	if bh.isValidRound && bh.isMatchStarted {
 		for _, subscriber := range bh.roundEndSubscribers {
 			subscriber.RoundEndHandler(e)
 		}
@@ -418,6 +463,15 @@ func (bh *basicHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
 	bh.UpdateTime()
 	bh.roundFreezeTime = false
 	if !bh.isMatchEnded && bh.isMatchStarted {
+		if bh.roundNumber-1 < len(bh.playerStats) {
+			bh.playerStats = bh.playerStats[:bh.roundNumber-1]
+		}
+		bh.AddNewRound() //adds new round for statistic holder
+
+		for _, player := range bh.playerMappings[bh.roundNumber-1] {
+			bh.statisticHolder.setPlayerStat(player.playerObject, 1, "Rounds")
+		}
+
 		for _, subscriber := range bh.roundFreezeTimeEndSubscribers {
 			subscriber.RoundFreezetimeEndHandler(e)
 		}
@@ -474,11 +528,8 @@ func (bh *basicHandler) RegisterRoundEndOfficialSubscriber(rs RoundEndOfficialSu
 
 func (bh *basicHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
 	bh.UpdateTime()
-	if bh.roundWinner == bh.matchPointTeam && bh.matchPointTeam != "" && bh.isMatchStarted {
-		bh.isMatchEnded = true
-	}
 
-	if bh.isMatchStarted {
+	if bh.isMatchStarted && bh.isValidRound {
 		for _, subscriber := range bh.roundEndOfficialSubscribers {
 			subscriber.RoundEndOfficialHandler(e)
 		}
@@ -763,7 +814,14 @@ func (bh *basicHandler) RegisterPlayerTeamChangeSubscriber(rs PlayerTeamChangeSu
 
 func (bh *basicHandler) PlayerTeamChangeHandler(e events.PlayerTeamChange) {
 	bh.UpdateTime()
+
 	if !bh.isMatchEnded && bh.isMatchStarted {
+
+		if e.NewTeam == common.TeamCounterTerrorists || e.NewTeam == common.TeamTerrorists {
+			if _, ok := bh.playerMappings[bh.roundNumber-1][e.Player.SteamID64]; !ok {
+				bh.playerMappings[bh.roundNumber-1] = currentPlayerMappings((*bh.parser).GameState())
+			}
+		}
 		for _, subscriber := range bh.playerTeamChangeSubscribers {
 			subscriber.PlayerTeamChangeHandler(e)
 		}
@@ -1083,77 +1141,198 @@ func (wg *weaponsGatherer) GetPeriodicTabularInfo() ([]string, []float64) {
 }
 
 type statisticHolder struct {
-	statsHeaders  []string
-	playerStats   []map[int][]float64
-	defaultValues []float64
+	basicHandler        *basicHandler
+	baseStatsHeaders    []string
+	playerStats         []map[uint64][]float64
+	defaultValues       map[string]float64
+	ratioStats          [][3]string
+	consolidatedHeaders []string
+	consolidatedStats   map[uint64][]float64
 }
 
-func (kc statisticHolder) GetRoundStatistic(roundNumber int, userID int) ([]string, []float64, error) {
-	return kc.statsHeaders, kc.playerStats[roundNumber-1][userID], nil
+func (kc statisticHolder) GetRoundStatistic(roundNumber int, userID uint64) ([]string, []float64, error) {
+
+	return kc.baseStatsHeaders, kc.playerStats[roundNumber-1][userID], nil
+}
+
+func (kc *statisticHolder) addToPlayerStat(player *common.Player, addAmount float64, stat string) {
+	isCT := (player.Team == 3)
+	var suffix string
+	kc.playerStats[kc.basicHandler.roundNumber-1][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] += addAmount
+	if isCT {
+		suffix = "_CT"
+	} else {
+		suffix = "_T"
+	}
+	if utils.IndexOf(stat+suffix, kc.baseStatsHeaders) != -1 {
+		kc.playerStats[kc.basicHandler.roundNumber-1][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] += addAmount
+	}
+}
+
+func (kc *statisticHolder) setPlayerStat(player *common.Player, value float64, stat string) {
+	isCT := (player.Team == 3)
+	var suffix string
+	roundID := len(kc.playerStats) - 1
+	kc.playerStats[roundID][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] = value
+	if isCT {
+		suffix = "_CT"
+	} else {
+		suffix = "_T"
+	}
+	if utils.IndexOf(stat+suffix, kc.baseStatsHeaders) != -1 {
+		kc.playerStats[roundID][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] = value
+	}
+
+}
+
+func (sh *statisticHolder) getPlayerStat(player *common.Player, stat string) float64 {
+	return sh.playerStats[len(sh.playerStats)-1][player.SteamID64][utils.IndexOf(stat, sh.baseStatsHeaders)]
+}
+
+func (sh *statisticHolder) GetMatchStatistic(userID uint64) ([]string, []float64, error) {
+	consolidatedStat := []float64{}
+	// var ratioHeaders []string
+	// var ratioStats []float64
+	// var denominatorStat float64
+
+	for _, roundStatMap := range sh.playerStats { //roundStatMap is map[uint64][]float64 of all base stats of the round
+		if playerStat, ok := roundStatMap[userID]; ok { //get stats for specific player and round
+			consolidatedStat = utils.ElementWiseSum(consolidatedStat, playerStat)
+		}
+
+	}
+
+	sh.consolidatedStats = make(map[uint64][]float64)
+	// sh.consolidatedHeaders = append(sh.baseStatsHeaders, ratioHeaders...)
+	// sh.consolidatedStats[userID] = append(consolidatedStat, ratioStats...)
+
+	sh.consolidatedHeaders = sh.baseStatsHeaders
+	sh.consolidatedStats[userID] = consolidatedStat
+
+	return sh.consolidatedHeaders, sh.consolidatedStats[userID], nil
+}
+
+func (kc *statisticHolder) AddNewRound() {
+	var newStats []float64
+	kc.playerStats = append(kc.playerStats, make(map[uint64][]float64))
+	for _, playerMapping := range kc.basicHandler.playerMappings[kc.basicHandler.roundNumber-1] {
+		for _, header := range kc.baseStatsHeaders {
+			if val, ok := kc.defaultValues[header]; ok {
+				newStats = append(newStats, val)
+			} else {
+				newStats = append(newStats, 0)
+			}
+
+		}
+		kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.SteamID64] = newStats
+	}
+
+}
+
+type playerConsolidatedStats struct {
+	statsHeaders  []string
+	playerName    string
+	playerSteamID uint64
+	playerStats   []float64
+}
+
+type matchConsolidatedStats struct {
+	statsHeaders   []string
+	playerNames    []string
+	playerSteamIDs []uint64
+	playerStats    [][]float64
+}
+
+type multiMatchConsolidatedStats struct {
+	statsHeaders []string
+	playerStats  map[uint64]playerConsolidatedStats
+}
+
+// func (kc *statisticHolder) ConsolidateMultimatchBaseStatistics(multiMatchStats []matchConsolidatedStats) (multiMatchConsolidation multiMatchConsolidatedStats) {
+// 	multiMatchConsolidation = multiMatchConsolidatedStats{}
+
+// 	var playerStat playerConsolidatedStats
+
+// 	var statMapping map[string]int
+// 	statMapping = make(map[string]int)
+
+// 	copy(multiMatchConsolidation.statsHeaders, kc.baseStatsHeaders)
+
+// 	for _, statName := range multiMatchConsolidation.statsHeaders {
+// 		statMapping[statName] = utils.IndexOf(statName, multiMatchStats[0].statsHeaders)
+// 	}
+
+// 	for _, matchStats := range multiMatchStats { //consolidate base stats for all matches and players
+// 		for playerIndex, playerSteamID := range matchStats.playerSteamIDs {
+// 			if _, ok := multiMatchConsolidation.playerStats[playerSteamID]; !ok {
+// 				playerStat = playerConsolidatedStats{}
+// 				copy(playerStat.statsHeaders, multiMatchConsolidation.statsHeaders)
+// 				playerStat.playerName = matchStats.playerNames[playerIndex]
+// 				playerStat.playerSteamID = matchStats.playerSteamIDs[playerIndex]
+// 				playerStat.playerStats = make([]float64, len(playerStat.statsHeaders))
+// 			} else {
+// 				playerStat = multiMatchConsolidation.playerStats[playerSteamID]
+// 			}
+// 			for statIndex, statName := range kc.baseStatsHeaders {
+// 				playerStat.playerStats[statIndex] += matchStats.playerStats[playerIndex][statMapping[statName]]
+// 			}
+// 		}
+// 	}
+// 	return multiMatchConsolidation
+// }
+
+func (kc *statisticHolder) GetRatioStatistics() [][3]string {
+	return kc.basicHandler.ratioStats
 }
 
 type PlayerStatisticCalculator interface {
 	CompositeEventHandler
-	GetRoundStatistic(roundNumber int, userID int) ([]string, []float64, error) //stats header, stats
-	GetMatchStatistic(userID int) ([]string, []float64, error)                  //stats header, stats
+	GetRoundStatistic(roundNumber int, userID uint64) ([]string, []float64, error) //stats header, stats
+	GetMatchStatistic(userID uint64) ([]string, []float64, error)                  //stats header, stats
 }
 
 type KDATCalculator struct {
-	basicHandler *basicHandler
 	statisticHolder
-	killsToBeTraded    map[int][]KillToBeTraded //maps from killerID to a list of their kills
+	killsToBeTraded    map[uint64][]KillToBeTraded //maps from killerID to a list of their kills
 	tradeIntervalLimit float64
+	isFirstDuel        bool
+	clutchSituations   []clutchSituation
 }
 
 type KillToBeTraded struct {
-	killerID    int
-	victimID    int
+	killer      *common.Player
+	victim      *common.Player
 	timeOfDeath float64
 }
 
 func (kc *KDATCalculator) processKillTradeInformation(e events.Kill) {
 	if e.Killer != nil {
-		killerID := e.Killer.UserID
-		victimID := e.Victim.UserID
+		victimID := e.Victim.SteamID64
 		var timeFromKill float64
-		var victimOfVictimID int
+
 		currentTime := kc.basicHandler.currentTime
 		if victimKills, ok := kc.killsToBeTraded[victimID]; ok {
 			for _, victimKill := range victimKills {
 				timeFromKill = currentTime - victimKill.timeOfDeath
 				if timeFromKill < kc.tradeIntervalLimit {
-					victimOfVictimID = victimKill.victimID
-					kc.playerStats[kc.basicHandler.roundNumber-1][victimOfVictimID][utils.IndexOf("WasTraded", kc.statsHeaders)] += 1
-					kc.playerStats[kc.basicHandler.roundNumber-1][killerID][utils.IndexOf("Trades", kc.statsHeaders)] += 1
+					kc.addToPlayerStat(victimKill.victim, 1, "Was Traded")
+					kc.addToPlayerStat(e.Killer, 1, "Trades")
 				}
 			}
 
 		}
-		kc.killsToBeTraded[killerID] = append(kc.killsToBeTraded[killerID],
-			KillToBeTraded{killerID: killerID, victimID: victimID, timeOfDeath: currentTime})
+		kc.addPlayerToBeTraded(e.Killer, e.Victim, currentTime)
 	}
 
 }
 
-func (kc *KDATCalculator) addPlayerToBeTraded(killerID int, victimID int, timeOfDeath float64) {
-	kc.killsToBeTraded[killerID] = append(kc.killsToBeTraded[killerID],
-		KillToBeTraded{killerID: killerID, victimID: victimID, timeOfDeath: timeOfDeath})
+func (kc *KDATCalculator) addPlayerToBeTraded(killer *common.Player, victim *common.Player, timeOfDeath float64) {
+	kc.killsToBeTraded[killer.SteamID64] = append(kc.killsToBeTraded[killer.SteamID64],
+		KillToBeTraded{killer: killer, victim: victim, timeOfDeath: timeOfDeath})
 }
 
 func (kc *KDATCalculator) Setup(tradeIntervalLimit float64) {
 	kc.tradeIntervalLimit = tradeIntervalLimit
-}
-
-func (kc *KDATCalculator) GetMatchStatistic(userID int) ([]string, []float64, error) {
-	consolidatedStat := []float64{}
-	for _, roundStatMap := range kc.playerStats {
-		if playerStat, ok := roundStatMap[userID]; ok {
-
-			consolidatedStat = utils.ElementWiseSum(consolidatedStat, playerStat)
-		}
-	}
-	consolidatedStat[utils.IndexOf("KAST", kc.statsHeaders)] = consolidatedStat[utils.IndexOf("KAST", kc.statsHeaders)] / float64(len(kc.playerStats))
-	return kc.statsHeaders, consolidatedStat, nil
 }
 
 func (kc *KDATCalculator) Register(bh *basicHandler) error {
@@ -1161,30 +1340,86 @@ func (kc *KDATCalculator) Register(bh *basicHandler) error {
 	bh.RegisterRoundStartSubscriber(interface{}(kc).(RoundStartSubscriber))
 	bh.RegisterKillSubscriber(interface{}(kc).(KillSubscriber))
 	bh.RegisterRoundEndOfficialSubscriber(interface{}(kc).(RoundEndOfficialSubscriber))
-	kc.statsHeaders = []string{"Kills", "Assists", "Deaths", "Trades", "WasTraded", "KAST"}
-	kc.defaultValues = []float64{0, 0, 0, 0, 0, 0}
-	return nil
-}
-
-func (kc *KDATCalculator) AddNewRound() {
-
-	kc.playerStats = append(kc.playerStats, make(map[int][]float64))
-	for _, playerMapping := range kc.basicHandler.playerMappings[kc.basicHandler.roundNumber-1] {
-		for i, _ := range kc.statsHeaders {
-			kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID] =
-				append(kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID], kc.defaultValues[i])
-		}
-
+	bh.RegisterRoundEndSubscriber(interface{}(kc).(RoundEndSubscriber))
+	bh.RegisterRoundFreezetimeEndSubscriber(interface{}(kc).(RoundFreezetimeEndSubscriber))
+	kc.baseStatsHeaders = []string{"Kills", "Kills_CT", "Kills_T",
+		"Assists", "Assists_T", "Assists_CT",
+		"Deaths", "Deaths_T", "Deaths_CT",
+		"Trades", "Trades_T", "Trades_CT",
+		"Was Traded", "Was Traded_T", "Was Traded_CT",
+		"KAST Sum", "KAST Sum_T", "KAST Sum_CT",
+		"1K", "1K_T", "1K_CT",
+		"2K", "2K_T", "2K_CT",
+		"3K", "3K_T", "3K_CT",
+		"4K", "4K_T", "4K_CT",
+		"5K", "5K_T", "5K_CT",
+		"Multikills", "Multikills_T", "Multikills_CT",
+		"First Kills", "First Kills_T", "First Kills_CT",
+		"First Kill Attempts", "First Kill Attempts_T", "First Kill Attempts_CT",
+		"Clutches", "Clutches_T", "Clutches_CT",
+		"Clutch Attempts", "Clutch Attempts_T", "Clutch Attempts_CT",
+		"1v1 Wins", "1v1 Wins_T", "1v1 Wins_CT",
+		"1v1 Attempts", "1v1 Attempts_T", "1v1 Attempts_CT",
+		"1v2 Wins", "1v2 Wins_T", "1v2 Wins_CT",
+		"1v2 Attempts", "1v2 Attempts_T", "1v2 Attempts_CT",
+		"1v3 Wins", "1v3 Wins_T", "1v3 Wins_CT",
+		"1v3 Attempts", "1v3 Attempts_T", "1v3 Attempts_CT",
+		"1v4 Wins", "1v4 Wins_T", "1v4 Wins_CT",
+		"1v4 Attempts", "1v4 Attempts_T", "1v4 Attempts_CT",
+		"1v5 Wins", "1v5 Wins_T", "1v5 Wins_CT",
+		"1v5 Attempts", "1v5 Attempts_T", "1v5 Attempts_CT",
+		"HS Kills", "HS Kills_T", "HS Kills_CT",
 	}
 
+	kc.ratioStats = append(kc.ratioStats, [3]string{"KPR", "Kills", "Rounds"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"APR", "Assists", "Rounds"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"DPR", "Deaths", "Rounds"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"Multikills Per Round", "Multikills", "Rounds"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"First Kill success Percentage", "First Kills", "First Kill Attempts"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"First Kill AttemptsPercentage", "First Kill Attempts", "Rounds"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"Clutch Attempts Percentage", "Clutch Attempts", "Rounds"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"Clutches Won Percentage", "Clutches", "Clutch Attempts"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"HS Percentage", "HS Kills", "Rounds"})
+	kc.ratioStats = append(kc.ratioStats, [3]string{"KAST", "KAST Sum", "Rounds"})
+	kc.defaultValues = make(map[string]float64)
+	return nil
 }
 
 func (kc *KDATCalculator) RoundStartHandler(e events.RoundStart) {
 	if kc.basicHandler.roundNumber-1 < len(kc.playerStats) {
 		kc.playerStats = kc.playerStats[:kc.basicHandler.roundNumber-1]
 	}
-	kc.killsToBeTraded = make(map[int][]KillToBeTraded)
+
+	kc.killsToBeTraded = make(map[uint64][]KillToBeTraded)
+	kc.isFirstDuel = true
+	kc.clutchSituations = nil
+
+}
+
+func (kc *KDATCalculator) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
 	kc.AddNewRound()
+}
+
+func (kc *KDATCalculator) processClutchSituation(winnerTeam common.Team) {
+
+	//check for clutch
+	var numberOfOpponents string
+	for _, clutchSituation := range kc.clutchSituations {
+		numberOfOpponents = strconv.Itoa(len(clutchSituation.opponents))
+		kc.setPlayerStat(clutchSituation.clutcher, 1, "Clutch Attempts")
+		kc.setPlayerStat(clutchSituation.clutcher, 1, "1v"+numberOfOpponents+" Attempts")
+		if clutchSituation.clutcher.Team == winnerTeam {
+			kc.setPlayerStat(clutchSituation.clutcher, 1, "Clutches")
+
+			kc.setPlayerStat(clutchSituation.clutcher, 1, "1v"+numberOfOpponents+" Wins")
+		}
+	}
+
+}
+
+func (kc *KDATCalculator) RoundEndHandler(e events.RoundEnd) {
+	kc.processClutchSituation(e.Winner)
+
 }
 
 func (kc *KDATCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
@@ -1192,97 +1427,286 @@ func (kc *KDATCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
 	var playerAssists float64
 	var playerDeath float64
 	var playerWasTraded float64
-	if kc.basicHandler.isMatchStarted {
-		for _, playerMapping := range kc.basicHandler.playerMappings[kc.basicHandler.roundNumber-1] {
-			playerKills = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("Kills", kc.statsHeaders)]
-			playerAssists = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("Assists", kc.statsHeaders)]
-			playerDeath = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("Deaths", kc.statsHeaders)]
-			playerWasTraded = kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("WasTraded", kc.statsHeaders)]
+	var stringKills string
+	roundID := len(kc.playerStats) - 1
 
-			if playerKills > 0 || playerAssists > 0 || playerDeath == 0 || playerWasTraded > 0 {
-				kc.playerStats[kc.basicHandler.roundNumber-1][playerMapping.playerObject.UserID][utils.IndexOf("KAST", kc.statsHeaders)] = 1
-			}
+	for _, playerMapping := range kc.basicHandler.playerMappings[roundID] {
+		playerKills = kc.playerStats[roundID][playerMapping.playerObject.SteamID64][utils.IndexOf("Kills", kc.baseStatsHeaders)]
+		playerAssists = kc.playerStats[roundID][playerMapping.playerObject.SteamID64][utils.IndexOf("Assists", kc.baseStatsHeaders)]
+		playerDeath = kc.playerStats[roundID][playerMapping.playerObject.SteamID64][utils.IndexOf("Deaths", kc.baseStatsHeaders)]
+		playerWasTraded = kc.playerStats[roundID][playerMapping.playerObject.SteamID64][utils.IndexOf("Was Traded", kc.baseStatsHeaders)]
 
+		if playerKills > 0 || playerAssists > 0 || playerDeath == 0 || playerWasTraded > 0 {
+			kc.setPlayerStat(playerMapping.playerObject, 1, "KAST Sum")
 		}
+
+		if playerKills > 0 {
+			stringKills = strconv.FormatFloat(playerKills, 'f', -1, 64)
+			kc.setPlayerStat(playerMapping.playerObject, 1, stringKills+"K")
+		}
+
+		if playerKills > 1 {
+			kc.setPlayerStat(playerMapping.playerObject, 1, "Multikills")
+		}
+
+	}
+
+}
+
+func (kc *KDATCalculator) addKDAInfo(e events.Kill) {
+	if e.Killer != nil {
+		kc.addToPlayerStat(e.Killer, 1, "Kills")
+		if e.IsHeadshot {
+			kc.addToPlayerStat(e.Killer, 1, "HS Kills")
+		}
+	}
+
+	if e.Assister != nil {
+		kc.addToPlayerStat(e.Assister, 1, "Assists")
+	}
+
+	if e.Victim != nil {
+		kc.addToPlayerStat(e.Victim, 1, "Deaths")
+		kc.addDeath(e.Victim)
+	}
+
+}
+
+type clutchSituation struct {
+	clutcher  *common.Player
+	opponents []*common.Player
+}
+
+func RemovePlayerFromSlice(s []*common.Player, player *common.Player) (returnSlice []*common.Player) {
+	var removed bool
+	for i, innerPlayer := range s {
+		if player == innerPlayer {
+			s[i] = s[len(s)-1]
+			removed = true
+		}
+	}
+	if removed {
+		returnSlice = s[:len(s)-1]
+	} else {
+		returnSlice = s
+	}
+	return returnSlice
+}
+
+func (kc *KDATCalculator) addDeath(victim *common.Player) {
+	remainingPlayers := kc.basicHandler.getPlayersAlive(victim.Team)
+	remainingPlayers = RemovePlayerFromSlice(remainingPlayers, victim)
+
+	remainingOpponents := kc.basicHandler.getPlayersAlive(victim.TeamState.Opponent.Team())
+	if len(remainingPlayers) == 1 && len(remainingOpponents) > 0 {
+		clutchSituation := clutchSituation{clutcher: remainingPlayers[0],
+			opponents: kc.basicHandler.getPlayersAlive(victim.TeamState.Opponent.Team())}
+		kc.clutchSituations = append(kc.clutchSituations, clutchSituation)
+	}
+
+}
+
+func (kc *KDATCalculator) addFirstDuelInfo(e events.Kill) {
+	if kc.isFirstDuel {
+		if e.Killer != nil {
+			kc.setPlayerStat(e.Killer, 1, "First Kills")
+			kc.setPlayerStat(e.Killer, 1, "First Kill Attempts")
+		}
+		if e.Victim != nil {
+			kc.setPlayerStat(e.Victim, 1, "First Kill Attempts")
+		}
+
+		kc.isFirstDuel = false
 	}
 
 }
 
 func (kc *KDATCalculator) KillHandler(e events.Kill) {
-	if kc.basicHandler.isMatchStarted {
 
-		if e.Killer != nil {
-			kc.playerStats[kc.basicHandler.roundNumber-1][e.Killer.UserID][utils.IndexOf("Kills", kc.statsHeaders)] += 1 //add kill
-		}
+	kc.addKDAInfo(e)
+	kc.addFirstDuelInfo(e)
 
-		if e.Assister != nil {
-			kc.playerStats[kc.basicHandler.roundNumber-1][e.Assister.UserID][utils.IndexOf("Assists", kc.statsHeaders)] += 1 //add assist
-		}
-
-		if e.Victim != nil {
-			kc.playerStats[kc.basicHandler.roundNumber-1][e.Victim.UserID][utils.IndexOf("Deaths", kc.statsHeaders)] += 1 //add death
-		}
-
-		kc.processKillTradeInformation(e)
-
-	}
+	kc.processKillTradeInformation(e)
 
 }
 
 type ADRCalculator struct {
-	basicHandler *basicHandler
 	statisticHolder
-}
-
-func (kc *ADRCalculator) GetMatchStatistic(userID int) ([]string, []float64, error) {
-	consolidatedStat := []float64{}
-	for _, roundStatMap := range kc.playerStats {
-		if playerStat, ok := roundStatMap[userID]; ok {
-
-			consolidatedStat = utils.ElementWiseSum(consolidatedStat, playerStat)
-
-		}
-
-	}
-	consolidatedStat = utils.ElementWiseDivision(consolidatedStat, float64(len(kc.playerStats)))
-	return kc.statsHeaders, consolidatedStat, nil
 }
 
 func (kc *ADRCalculator) Register(bh *basicHandler) error {
 	kc.basicHandler = bh
 	bh.RegisterRoundStartSubscriber(interface{}(kc).(RoundStartSubscriber))
 	bh.RegisterPlayerHurtSubscriber(interface{}(kc).(PlayerHurtSubscriber))
-	kc.statsHeaders = []string{"ADR"}
+	bh.RegisterRoundFreezetimeEndSubscriber(interface{}(kc).(RoundFreezetimeEndSubscriber))
+	kc.baseStatsHeaders = []string{"Total Damage Done", "Total Damage Done_T", "Total Damage Done_CT"}
+	kc.ratioStats = append(kc.ratioStats, [3]string{"ADR", "Total Damage Done", "Rounds"})
+	kc.defaultValues = make(map[string]float64)
 	return nil
-}
-
-func (kc *ADRCalculator) AddNewRound() {
-
-	kc.playerStats = append(kc.playerStats, make(map[int][]float64))
-	for _, playerMapping := range kc.basicHandler.playerMappings[kc.basicHandler.roundNumber-1] {
-		for range kc.statsHeaders {
-			kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID] =
-				append(kc.playerStats[len(kc.playerStats)-1][playerMapping.playerObject.UserID], 0)
-		}
-
-	}
-
 }
 
 func (kc *ADRCalculator) RoundStartHandler(e events.RoundStart) {
 	if kc.basicHandler.roundNumber-1 < len(kc.playerStats) {
 		kc.playerStats = kc.playerStats[:kc.basicHandler.roundNumber-1]
 	}
+}
+
+func (kc *ADRCalculator) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
+
 	kc.AddNewRound()
 }
 
 func (kc *ADRCalculator) PlayerHurtHandler(e events.PlayerHurt) {
 
 	if e.Attacker != nil {
-		if _, ok := kc.playerStats[kc.basicHandler.roundNumber-1][e.Attacker.UserID]; !ok {
-			fmt.Println("nokey")
+		kc.addToPlayerStat(e.Attacker, float64(e.HealthDamageTaken), "Total Damage Done")
+	}
+
+}
+
+type FlashUsageCalculator struct {
+	statisticHolder
+	blindPlayers map[uint64]flashInfo
+}
+
+type flashInfo struct {
+	victim           *common.Player
+	attacker         *common.Player
+	projectile       *common.GrenadeProjectile
+	duration         float64
+	timeOfExplosion  float64
+	blindnessEndtime float64
+}
+
+func (fc *FlashUsageCalculator) Register(bh *basicHandler) error {
+	fc.basicHandler = bh
+	bh.RegisterRoundStartSubscriber(interface{}(fc).(RoundStartSubscriber))
+	bh.RegisterFlashExplodeSubscriber(interface{}(fc).(FlashExplodeSubscriber))
+	bh.RegisterKillSubscriber(interface{}(fc).(KillSubscriber))
+	bh.RegisterPlayerFlashedSubscriber(interface{}(fc).(PlayerFlashedSubscriber))
+	bh.RegisterRoundEndOfficialSubscriber(interface{}(fc).(RoundEndOfficialSubscriber))
+	bh.RegisterRoundFreezetimeEndSubscriber(interface{}(fc).(RoundFreezetimeEndSubscriber))
+	fc.baseStatsHeaders = []string{"Flashes Thrown", "Flashes Thrown_T", "Flashes Thrown_CT",
+		"Enemies Blinded", "Enemies Blinded_T", "Enemies Blinded_CT",
+		"Teammates Blinded", "Teammates Blinded_T", "Teammates Blinded_CT",
+		"Total Enemy Blind Time", "Total Enemy Blind Time_T", "Total Enemy Blind Time_CT",
+		"Total Teammate Blind Time", "Total Teammate Blind Time_T", "Total Teammate Blind Time_CT",
+		"Flashes Leading To Enemy Death", "Flashes Leading To Enemy Death_T", "Flashes Leading To Enemy Death_CT",
+		"Flashes Leading To Teammate Death", "Flashes Leading To Teammate Death_T", "Flashes Leading To Teammate Death_CT",
+		"Net Players Blinded (Enemies-Teammates)", "Net Players Blinded (Enemies-Teammates)_T", "Net Players Blinded (Enemies-Teammates)_CT",
+		"Net Flashes Leading To Death (Enemies-Teammates)", "Net Flashes Leading To Death (Enemies-Teammates)_T", "Net Flashes Leading To Death (Enemies-Teammates)_CT",
+		"Net Blind Time (Enemies-Teammates)", "Net Blind Time (Enemies-Teammates)_T", "Net Blind Time (Enemies-Teammates)_CT",
+	}
+	fc.ratioStats = append(fc.ratioStats, [3]string{"Enemies Blinded Per Flash", "Enemies Blinded", "Flashes Thrown"})
+	fc.ratioStats = append(fc.ratioStats, [3]string{"Teammates Blinded Per Flash", "Teammates Blinded", "Flashes Thrown"})
+	fc.ratioStats = append(fc.ratioStats, [3]string{"Net Players Blinded Per Flash", "Net Players Blinded (Enemies-Teammates)", "Flashes Thrown"})
+	fc.ratioStats = append(fc.ratioStats, [3]string{"Net Flashes Leading To Death Per Flash", "Net Flashes Leading To Death (Enemies-Teammates)", "Flashes Thrown"})
+	fc.ratioStats = append(fc.ratioStats, [3]string{"Average Blind Time Per Flash", "Net Blind Time (Enemies-Teammates)", "Flashes Thrown"})
+	fc.ratioStats = append(fc.ratioStats, [3]string{"Flashes Thrown Per Round", "Flashes Thrown", "Rounds"})
+	fc.defaultValues = make(map[string]float64)
+	fc.blindPlayers = make(map[uint64]flashInfo)
+	return nil
+}
+
+func (fc *FlashUsageCalculator) RoundStartHandler(e events.RoundStart) {
+	if fc.basicHandler.roundNumber-1 < len(fc.playerStats) {
+		fc.playerStats = fc.playerStats[:fc.basicHandler.roundNumber-1]
+	}
+}
+
+func (fc *FlashUsageCalculator) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
+
+	fc.AddNewRound()
+}
+
+func (fc *FlashUsageCalculator) FlashExplodeHandler(e events.FlashExplode) {
+
+	if e.Thrower != nil {
+		fc.addToPlayerStat(e.Thrower, 1, "Flashes Thrown")
+	}
+
+}
+
+func (fc *FlashUsageCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+	var statIndex int
+	var playerID uint64
+	var roundID int
+	var enemiesIndex int
+	var teammatesIndex int
+	roundID = len(fc.playerStats) - 1
+	for _, playerMapping := range fc.basicHandler.playerMappings[roundID] {
+		playerID = playerMapping.playerObject.SteamID64
+		for _, suffix := range [3]string{"", "_T", "_CT"} {
+
+			statIndex = utils.IndexOf("Net Players Blinded (Enemies-Teammates)"+suffix, fc.baseStatsHeaders)
+			enemiesIndex = utils.IndexOf("Enemies Blinded"+suffix, fc.baseStatsHeaders)
+			teammatesIndex = utils.IndexOf("Teammates Blinded"+suffix, fc.baseStatsHeaders)
+			fc.playerStats[roundID][playerID][statIndex] = fc.playerStats[roundID][playerID][enemiesIndex] - fc.playerStats[roundID][playerID][teammatesIndex]
+
+			statIndex = utils.IndexOf("Net Flashes Leading To Death (Enemies-Teammates)"+suffix, fc.baseStatsHeaders)
+			enemiesIndex = utils.IndexOf("Flashes Leading To Enemy Death"+suffix, fc.baseStatsHeaders)
+			teammatesIndex = utils.IndexOf("Flashes Leading To Teammate Death"+suffix, fc.baseStatsHeaders)
+			fc.playerStats[roundID][playerID][statIndex] = fc.playerStats[roundID][playerID][enemiesIndex] - fc.playerStats[roundID][playerID][teammatesIndex]
+
+			statIndex = utils.IndexOf("Net Blind Time (Enemies-Teammates)"+suffix, fc.baseStatsHeaders)
+			enemiesIndex = utils.IndexOf("Total Enemy Blind Time"+suffix, fc.baseStatsHeaders)
+			teammatesIndex = utils.IndexOf("Total Teammate Blind Time"+suffix, fc.baseStatsHeaders)
+			fc.playerStats[roundID][playerID][statIndex] = fc.playerStats[roundID][playerID][enemiesIndex] - fc.playerStats[roundID][playerID][teammatesIndex]
+
 		}
-		kc.playerStats[kc.basicHandler.roundNumber-1][e.Attacker.UserID][0] += float64(e.HealthDamageTaken) //add damage
+
+	}
+
+}
+
+func (fc *FlashUsageCalculator) KillHandler(e events.Kill) {
+
+	if e.Victim != nil {
+
+		if flashInfo, ok := fc.blindPlayers[e.Victim.SteamID64]; ok {
+			if flashInfo.blindnessEndtime > fc.basicHandler.currentTime {
+				if e.Victim.Team == flashInfo.attacker.Team {
+					fc.addToPlayerStat(flashInfo.attacker, 1, "Flashes Leading To Teammate Death")
+				} else {
+					fc.addToPlayerStat(flashInfo.attacker, 1, "Flashes Leading To Enemy Death")
+				}
+
+			}
+		}
+	}
+
+}
+
+func (fc *FlashUsageCalculator) PlayerFlashedHandler(e events.PlayerFlashed) {
+	var relevantFlashInfo bool
+	duration := e.FlashDuration().Seconds()
+	if finfo, ok := fc.blindPlayers[e.Player.SteamID64]; ok {
+		if finfo.blindnessEndtime < duration+fc.basicHandler.currentTime {
+			fc.blindPlayers[e.Player.SteamID64] = flashInfo{victim: e.Player, attacker: e.Attacker, projectile: e.Projectile,
+				duration: duration, timeOfExplosion: fc.basicHandler.currentTime,
+				blindnessEndtime: fc.basicHandler.currentTime + duration,
+			}
+			relevantFlashInfo = true
+
+		}
+	} else {
+
+		fc.blindPlayers[e.Player.SteamID64] = flashInfo{victim: e.Player, attacker: e.Attacker, projectile: e.Projectile,
+			duration: duration, timeOfExplosion: fc.basicHandler.currentTime,
+			blindnessEndtime: fc.basicHandler.currentTime + duration,
+		}
+
+		relevantFlashInfo = true
+	}
+
+	if relevantFlashInfo {
+		if e.Attacker.Team == e.Player.Team {
+			fc.addToPlayerStat(e.Attacker, e.FlashDuration().Seconds(), "Total Teammate Blind Time")
+			fc.addToPlayerStat(e.Attacker, 1, "Teammates Blinded")
+		} else {
+			fc.addToPlayerStat(e.Attacker, e.FlashDuration().Seconds(), "Total Enemy Blind Time")
+			fc.addToPlayerStat(e.Attacker, 1, "Enemies Blinded")
+		}
 	}
 
 }
@@ -1444,6 +1868,7 @@ type infoGenerationHandler struct {
 	mapGenerator            utils.MapGenerator
 	matchData               *matchData
 	imgSize                 int
+	demFileHash             string
 
 	rootMatchPath    string
 	roundDirPath     string
@@ -1458,8 +1883,6 @@ func (ih *infoGenerationHandler) Register(bh *basicHandler) error {
 	bh.RegisterRoundStartSubscriber(interface{}(ih).(RoundStartSubscriber))
 	bh.RegisterFrameDoneSubscriber(interface{}(ih).(FrameDoneSubscriber))
 	bh.RegisterRoundEndOfficialSubscriber(interface{}(ih).(RoundEndOfficialSubscriber))
-	bh.RegisterPlayerTeamChangeSubscriber(interface{}(ih).(PlayerTeamChangeSubscriber))
-	bh.RegisterIsWarmupPeriodChangedSubscriber(interface{}(ih).(IsWarmupPeriodChangedSubscriber))
 
 	return nil
 }
@@ -1520,7 +1943,7 @@ func (ih *infoGenerationHandler) GetFullRoundStatistics() (data [][]string) {
 		player := playerMapping.playerObject
 
 		for j, playerStatCalculator := range *ih.allPlayerStatCalculator {
-			tempHeader, tempData, err = playerStatCalculator.GetRoundStatistic(ih.basicHandler.roundNumber, player.UserID)
+			tempHeader, tempData, err = playerStatCalculator.GetRoundStatistic(ih.basicHandler.roundNumber, player.SteamID64)
 
 			checkError(err)
 
@@ -1606,7 +2029,7 @@ func (ih *infoGenerationHandler) checkAndGenerateMatchEndStatistics() {
 		fmt.Println("Generating match statistics")
 		if ih.roundDirPath != ih.rootMatchPath {
 			data := ih.GetFullMatchStatistics()
-			fileWrite, err := os.Create(ih.rootMatchPath + "/match_statistics.txt")
+			fileWrite, err := os.Create(ih.rootMatchPath + "/match_statistics.csv")
 			checkError(err)
 			writer := csv.NewWriter(fileWrite)
 
@@ -1619,43 +2042,41 @@ func (ih *infoGenerationHandler) checkAndGenerateMatchEndStatistics() {
 
 }
 
-func (ih *infoGenerationHandler) PlayerTeamChangeHandler(e events.PlayerTeamChange) {
-	if _, ok := ih.basicHandler.playerMappings[ih.basicHandler.roundNumber-1][e.Player.UserID]; !ok {
-		fmt.Println("PlayerTeamChange")
-	}
-
-}
-
-func (ih *infoGenerationHandler) IsWarmupPeriodChangedHandler(e events.IsWarmupPeriodChanged) {
-	fmt.Println("WarmUpPeriodChanged")
-}
-
 func (ih *infoGenerationHandler) GetFullMatchStatistics() (data [][]string) {
 	var tempHeader []string
 	var tempData []float64
 	var err error
 	var stringData []string
 	var framedData [10][]string
+	var statsIDs [][]int
+
 	firstPlayer := true
-	data = append(data, []string{"Name"})
+	data = append(data, []string{"Name", "SteamID"})
+	dbConn := openDBConn()
+
+	matchID := insertMatch(dbConn, ih.demFileHash, ih.basicHandler.mapMetadata.Name,
+		ih.basicHandler.terroristFirstTeamscore, ih.basicHandler.ctFirstTeamScore, ih.basicHandler.matchDatetime, true)
+
 	for _, playerMapping := range ih.basicHandler.playerMappings[ih.basicHandler.roundNumber-1] {
 		player := playerMapping.playerObject
 
 		for j, playerStatCalculator := range *ih.allPlayerStatCalculator {
-			tempHeader, tempData, err = playerStatCalculator.GetMatchStatistic(player.UserID)
-
+			tempHeader, tempData, err = playerStatCalculator.GetMatchStatistic(player.SteamID64)
 			checkError(err)
 
 			if j == 0 {
-
-				stringData = append([]string{playerMapping.playerObject.Name}, utils.FloatSliceToString(tempData)...)
+				insertPlayer(dbConn, playerMapping.playerObject.SteamID64, playerMapping.playerObject.Name)
+				stringData = append([]string{playerMapping.playerObject.Name,
+					strconv.FormatUint(playerMapping.playerObject.SteamID64, 10)}, utils.FloatSliceToString(tempData)...)
 			} else {
 				stringData = append(stringData, utils.FloatSliceToString(tempData)...)
 			}
 
 			if firstPlayer {
 				data[0] = append(data[0], tempHeader...)
+				statsIDs = append(statsIDs, insertBaseStatistics(dbConn, tempHeader))
 			}
+			insertStatisticsFacts(dbConn, statsIDs[j], tempData, player.SteamID64, matchID)
 
 		}
 		framedData[playerMapping.currentSlot] = append(framedData[playerMapping.currentSlot], stringData...)
@@ -1688,7 +2109,8 @@ func (ih *infoGenerationHandler) isReadyForProcessing() bool {
 	return false
 }
 
-func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, rootMatchPath string, allIconGenerators *[]PeriodicIconGenerator, allTabularGenerators *[]PeriodicTabularGenerator,
+func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, rootMatchPath string, demFileHash string,
+	allIconGenerators *[]PeriodicIconGenerator, allTabularGenerators *[]PeriodicTabularGenerator,
 	allStatGenerators *[]StatGenerator, allPlayerStatCalculators *[]PlayerStatisticCalculator) error {
 
 	var mapGenerator utils.MapGenerator
@@ -1698,6 +2120,7 @@ func (ih *infoGenerationHandler) Setup(imgSize int, updateInterval float64, root
 	ih.matchData = new(matchData)
 	ih.rootMatchPath = rootMatchPath
 	ih.roundDirPath = rootMatchPath
+	ih.demFileHash = demFileHash
 
 	ih.allIconGenerators = allIconGenerators
 	ih.allTabularGenerators = allTabularGenerators
@@ -1790,6 +2213,8 @@ func RemoveContents(dir string) error {
 }
 
 func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
+	fileStat, err := os.Stat(demPath)
+
 	f, err := os.Open(demPath)
 	checkError(err)
 	defer func() {
@@ -1797,11 +2222,21 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 			fmt.Println("Erro no processamento do arquivo!", r)
 		}
 	}()
-	p := dem.NewParser(f)
+
+	hasher := sha256.New()
+
+	_, err = io.Copy(hasher, f)
+	checkError(err)
 	defer f.Close()
+
+	f, err = os.Open(demPath)
+	checkError(err)
+
+	p := dem.NewParser(f)
 
 	header, err := p.ParseHeader()
 	checkError(err)
+
 	fmt.Println("Map:", header.MapName)
 	rootMatchPath := destDir + "/" + header.MapName + "/" + strconv.Itoa(fileID)
 	dirExists, _ := exists(rootMatchPath)
@@ -1810,7 +2245,7 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 		checkError(err)
 	}
 
-	imgSize := 500
+	imgSize := 300
 
 	mapMetadata := metadata.MapNameToMap[header.MapName]
 	var mapGenerator utils.MapGenerator
@@ -1822,9 +2257,10 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 
 	mapGenerator.Setup(header.MapName, imgSize)
 
-	basicHandler.Setup(&p, tickRate, mapMetadata)
+	basicHandler.Setup(&p, tickRate, mapMetadata, fileStat.ModTime())
 	basicHandler.RegisterBasicEvents()
 	allTabularGenerators = append(allTabularGenerators, &basicHandler)
+	allPlayerStatCalculators = append(allPlayerStatCalculators, &basicHandler)
 
 	tradeIntervalLimit := 5.0
 	var kdatHandler KDATCalculator
@@ -1835,6 +2271,10 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	var adrHandler ADRCalculator
 	adrHandler.Register(&basicHandler)
 	allPlayerStatCalculators = append(allPlayerStatCalculators, &adrHandler)
+
+	var flashCalc FlashUsageCalculator
+	flashCalc.Register(&basicHandler)
+	allPlayerStatCalculators = append(allPlayerStatCalculators, &flashCalc)
 
 	var popHandler poppingGrenadeHandler
 	popHandler.SetBaseIcons()
@@ -1854,7 +2294,8 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	var infoHandler infoGenerationHandler
 	updateInterval := 1.5 //1.5s between framegroups
 	infoHandler.Register(&basicHandler)
-	infoHandler.Setup(imgSize, updateInterval, rootMatchPath, &allIconGenerators, &allTabularGenerators, &allStatGenerators, &allPlayerStatCalculators)
+	infoHandler.Setup(imgSize, updateInterval, rootMatchPath, hex.EncodeToString(hasher.Sum(nil)),
+		&allIconGenerators, &allTabularGenerators, &allStatGenerators, &allPlayerStatCalculators)
 
 	err = p.ParseToEnd()
 	p.Close()
@@ -1905,8 +2346,8 @@ func writeToCSV(data [][]string, filePath string) {
 	defer file.Close()
 }
 
-func currentPlayerMappings(gs dem.GameState) map[int]playerMapping {
-	newAllPlayers := make(map[int]playerMapping)
+func currentPlayerMappings(gs dem.GameState) map[uint64]playerMapping {
+	newAllPlayers := make(map[uint64]playerMapping)
 	players := gs.Participants().Playing()
 	ctCount := 0
 	tCount := 0
@@ -1917,7 +2358,7 @@ func currentPlayerMappings(gs dem.GameState) map[int]playerMapping {
 
 		if isTR && tCount > 4 || isCT && ctCount > 4 {
 			fmt.Println("invalid team size")
-			return make(map[int]playerMapping)
+			return make(map[uint64]playerMapping)
 		}
 
 		if !(isCT || isTR) {
@@ -1932,19 +2373,19 @@ func currentPlayerMappings(gs dem.GameState) map[int]playerMapping {
 			playerBasePos = tCount
 			tCount++
 		}
-		newAllPlayers[player.UserID] = playerMapping{playerObject: player, currentSlot: playerBasePos}
+		newAllPlayers[player.SteamID64] = playerMapping{playerObject: player, currentSlot: playerBasePos}
 	}
 
 	return newAllPlayers
 }
 
-func sortPlayersByUserID(allPlayers map[int]playerMapping) []int {
+func sortPlayersByUserID(allPlayers map[uint64]playerMapping) []uint64 {
 
-	var keys []int
+	var keys []uint64
 	for userID := range allPlayers {
 		keys = append(keys, userID)
 	}
-	sort.Ints(keys)
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	return keys
 }
 
@@ -1973,4 +2414,75 @@ func generateRoundMaps(mapGenerator utils.MapGenerator, iconLists [][]utils.Icon
 
 	}
 
+}
+
+func insertPlayer(dbConn *sql.DB, playerID uint64, playerName string) {
+	insForm, err := dbConn.Prepare("INSERT INTO PLAYER(idPLAYER, NAME) VALUES(?,?) ON DUPLICATE KEY UPDATE NAME=?")
+	checkError(err)
+	insForm.Exec(playerID, playerName, playerName)
+	insForm.Close()
+}
+
+func insertMatch(dbConn *sql.DB, demFileHash string, mapName string, terroristFirstTeamScore int, ctFirstTeamScore int,
+	matchDateTime time.Time, overwriteMatch bool) (matchID int) {
+
+	dt := matchDateTime.Format(time.RFC3339)
+	insForm, err := dbConn.Prepare("INSERT INTO CSGO_MATCH(SCORE_FIRST_T,SCORE_FIRST_CT,MAP,MATCH_DATETIME,DEMO_FILE_HASH) VALUES(?,?,?,?,?)")
+	checkError(err)
+	_, err = insForm.Exec(terroristFirstTeamScore, ctFirstTeamScore, mapName, dt, demFileHash)
+	insForm.Close()
+	if err.(*mysql.MySQLError).Number == 1062 {
+		fmt.Println("Demo file already in database")
+		if overwriteMatch {
+			fmt.Println("Overwrite mode on. Deleting old data.")
+			insForm, err = dbConn.Prepare("DELETE STATISTICS_PLAYER_MATCH_FACT FROM STATISTICS_PLAYER_MATCH_FACT INNER JOIN " +
+				"CSGO_MATCH ON STATISTICS_PLAYER_MATCH_FACT.idCSGO_MATCH = CSGO_MATCH.idCSGO_MATCH WHERE CSGO_MATCH.DEMO_FILE_HASH = ?")
+			_, err = insForm.Exec(demFileHash)
+			insForm.Close()
+			checkError(err)
+		} else {
+			checkError(err)
+		}
+	}
+
+	sqlResult, err := dbConn.Query("SELECT idCSGO_MATCH FROM CSGO_MATCH WHERE DEMO_FILE_HASH=?", demFileHash)
+	checkError(err)
+	sqlResult.Next()
+	sqlResult.Scan(&matchID)
+	sqlResult.Close()
+	return matchID
+}
+
+func openDBConn() *sql.DB {
+	db, err := sql.Open("mysql", "marcel:basecsteste1!@tcp(127.0.0.1:3306)/CSGO_ANALYTICS")
+
+	checkError(err)
+	return db
+}
+
+func insertBaseStatistics(dbConn *sql.DB, tempHeader []string) (statIds []int) {
+	var newID int
+	for _, statName := range tempHeader {
+		insForm, err := dbConn.Prepare("INSERT IGNORE INTO BASE_STATISTIC(NAME) VALUES(?)")
+		checkError(err)
+		insForm.Exec(statName)
+		insForm.Close()
+		sqlResult, err := dbConn.Query("SELECT idBASE_STATISTIC FROM BASE_STATISTIC WHERE NAME=?", statName)
+		checkError(err)
+		sqlResult.Next()
+		sqlResult.Scan(&newID)
+		sqlResult.Close()
+		statIds = append(statIds, newID)
+
+	}
+	return statIds
+}
+
+func insertStatisticsFacts(dbConn *sql.DB, statIDs []int, tempData []float64, playerID uint64, matchID int) {
+	for i, statID := range statIDs {
+		insForm, err := dbConn.Prepare("INSERT INTO STATISTICS_PLAYER_MATCH_FACT(idCSGO_MATCH,idPLAYER,idBASE_STATISTIC,VALUE) VALUES(?,?,?,?)")
+		checkError(err)
+		insForm.Exec(matchID, playerID, statID, tempData[i])
+		insForm.Close()
+	}
 }
