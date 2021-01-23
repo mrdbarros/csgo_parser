@@ -25,8 +25,8 @@
       "program": "${fileDirname}",
       "env": {},
       "args": ["-mode=dir",
-        "/home/marcel/projetos/data/csgo_analyze/replays",
-        "/home/marcel/projetos/data/csgo_analyze/processed",
+        "/home/marcel/projetos/data/csgo_analyze/replays/0",
+        "/home/marcel/projetos/data/csgo_analyze/processed/gc",
         128,
       ]
     },
