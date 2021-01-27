@@ -12,9 +12,9 @@
       "program": "${fileDirname}",
       "env": {},
       "args": ["-mode=file",
-        "/home/marcel/projetos/data/csgo_analyze/replays/0/2021-01-16__0302__1__10470498__de_inferno__timewhite__vs__c4base.dem",
+        "/home/marcel/projetos/data/csgo_analyze/replays/0/2021-01-16__0214__1__10469660__de_overpass__timegui__vs__c4base.dem",
         "/home/marcel/projetos/data/csgo_analyze/processed/gc/",
-        128,
+        32,
       ]
     },
     {
@@ -27,7 +27,7 @@
       "args": ["-mode=dir",
         "/home/marcel/projetos/data/csgo_analyze/replays/0",
         "/home/marcel/projetos/data/csgo_analyze/processed/gc",
-        128,
+        32,
       ]
     },
     {

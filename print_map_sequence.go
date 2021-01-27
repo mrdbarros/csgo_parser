@@ -173,6 +173,11 @@ type PlayerTeamChangeSubscriber interface {
 	PlayerTeamChangeHandler(events.PlayerTeamChange)
 }
 
+//Interface to PlayerDisconnected event subscribers
+type PlayerDisconnectedSubscriber interface {
+	PlayerDisconnectedHandler(events.PlayerDisconnected)
+}
+
 //basic shared handler for parsing
 type basicHandler struct {
 	parser      *dem.Parser
@@ -246,6 +251,9 @@ type basicHandler struct {
 	playerTeamChangeHandlerID   dp.HandlerIdentifier
 	playerTeamChangeSubscribers []PlayerTeamChangeSubscriber
 
+	playerDisconnectedHandlerID   dp.HandlerIdentifier
+	playerDisconnectedSubscribers []PlayerDisconnectedSubscriber
+
 	roundStartTime          float64
 	currentTime             float64
 	currentScore            string
@@ -278,7 +286,7 @@ func (bh *basicHandler) RegisterBasicEvents() error {
 	bh.roundStartHandlerID = parser.RegisterEventHandler(bh.RoundStartHandler)
 	bh.roundEndHandlerID = parser.RegisterEventHandler(bh.RoundEndHandler)
 	bh.roundFreezeTimeEndHandlerID = parser.RegisterEventHandler(bh.RoundFreezetimeEndHandler)
-	bh.playerTeamChangeHandlerID = parser.RegisterEventHandler(bh.PlayerTeamChangeHandler)
+	bh.playerDisconnectedHandlerID = parser.RegisterEventHandler(bh.PlayerDisconnectedHandler)
 	return nil
 }
 
@@ -336,10 +344,12 @@ func (bh *basicHandler) RoundStartHandler(e events.RoundStart) {
 		ctTeam := gs.TeamCounterTerrorists()
 
 		scoreDiff := utils.Abs((tTeam.Score() - ctTeam.Score()))
-		isTMatchPoint := (tTeam.Score() >= 15 && tTeam.Score()%3 == 0 && scoreDiff >= 1)
-		isCTMatchPoint := (ctTeam.Score() >= 15 && ctTeam.Score()%3 == 0 && scoreDiff >= 1)
-		if isTMatchPoint || isCTMatchPoint {
-			bh.matchPointTeam = bh.roundWinner
+		isTMatchPoint := (tTeam.Score() >= 15 && tTeam.Score()%3 == 0 && scoreDiff >= 1 && tTeam.Score() > ctTeam.Score())
+		isCTMatchPoint := (ctTeam.Score() >= 15 && ctTeam.Score()%3 == 0 && scoreDiff >= 1 && ctTeam.Score() > tTeam.Score())
+		if isTMatchPoint {
+			bh.matchPointTeam = "t"
+		} else if isCTMatchPoint {
+			bh.matchPointTeam = "ct"
 		} else {
 			bh.matchPointTeam = ""
 		}
@@ -466,7 +476,10 @@ func (bh *basicHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
 	} else {
 		bh.isValidRound = false
 	}
+	parser := (*bh.parser)
 	if !bh.isMatchEnded && bh.isMatchStarted {
+		currentMappings := currentPlayerMappings(parser.GameState())
+		bh.playerMappings[len(bh.playerMappings)-1] = currentMappings
 		if bh.roundNumber-1 < len(bh.playerStats) {
 			bh.playerStats = bh.playerStats[:bh.roundNumber-1]
 		}
@@ -756,7 +769,6 @@ func (bh *basicHandler) RegisterPlayerHurtSubscriber(rs PlayerHurtSubscriber) {
 	}
 
 	bh.playerHurtSubscribers = append(bh.playerHurtSubscribers, rs)
-
 }
 
 func (bh *basicHandler) PlayerHurtHandler(e events.PlayerHurt) {
@@ -821,13 +833,34 @@ func (bh *basicHandler) PlayerTeamChangeHandler(e events.PlayerTeamChange) {
 
 	if !bh.isMatchEnded && bh.isMatchStarted {
 
-		if e.NewTeam == common.TeamCounterTerrorists || e.NewTeam == common.TeamTerrorists {
-			if _, ok := bh.playerMappings[bh.roundNumber-1][e.Player.SteamID64]; !ok {
-				bh.playerMappings[bh.roundNumber-1] = currentPlayerMappings((*bh.parser).GameState())
-			}
-		}
+		// if e.NewTeam == common.TeamCounterTerrorists || e.NewTeam == common.TeamTerrorists {
+		// 	if _, ok := bh.playerMappings[bh.roundNumber-1][e.Player.SteamID64]; !ok {
+		// 		bh.playerMappings[bh.roundNumber-1] = currentPlayerMappings((*bh.parser).GameState())
+		// 	}
+		// }
 		for _, subscriber := range bh.playerTeamChangeSubscribers {
 			subscriber.PlayerTeamChangeHandler(e)
+		}
+	}
+}
+
+func (bh *basicHandler) RegisterPlayerDisconnectedSubscriber(rs PlayerDisconnectedSubscriber) {
+	parser := *(bh.parser)
+	if bh.playerDisconnectedHandlerID == nil {
+		bh.playerDisconnectedHandlerID = parser.RegisterEventHandler(bh.PlayerDisconnectedHandler)
+	}
+
+	bh.playerDisconnectedSubscribers = append(bh.playerDisconnectedSubscribers, rs)
+
+}
+
+func (bh *basicHandler) PlayerDisconnectedHandler(e events.PlayerDisconnected) {
+	bh.UpdateTime()
+
+	if !bh.isMatchEnded && bh.isMatchStarted {
+
+		for _, subscriber := range bh.playerDisconnectedSubscribers {
+			subscriber.PlayerDisconnectedHandler(e)
 		}
 	}
 }
@@ -1162,14 +1195,14 @@ func (kc statisticHolder) GetRoundStatistic(roundNumber int, userID uint64) ([]s
 func (kc *statisticHolder) addToPlayerStat(player *common.Player, addAmount float64, stat string) {
 	isCT := (player.Team == 3)
 	var suffix string
-	kc.playerStats[kc.basicHandler.roundNumber-1][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] += addAmount
+	kc.playerStats[len(kc.playerStats)-1][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] += addAmount
 	if isCT {
 		suffix = "_CT"
 	} else {
 		suffix = "_T"
 	}
 	if utils.IndexOf(stat+suffix, kc.baseStatsHeaders) != -1 {
-		kc.playerStats[kc.basicHandler.roundNumber-1][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] += addAmount
+		kc.playerStats[len(kc.playerStats)-1][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] += addAmount
 	}
 }
 
@@ -2232,7 +2265,7 @@ func RemoveContents(dir string) error {
 	return nil
 }
 
-func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
+func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	fileStat, err := os.Stat(demPath)
 
 	f, err := os.Open(demPath)
@@ -2243,6 +2276,7 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 		}
 	}()
 	fileName := filepath.Base(demPath)
+	fmt.Println("Processing demo: ", fileName)
 	hasher := sha256.New()
 
 	_, err = io.Copy(hasher, f)
@@ -2282,7 +2316,7 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	allTabularGenerators = append(allTabularGenerators, &basicHandler)
 	allPlayerStatCalculators = append(allPlayerStatCalculators, &basicHandler)
 
-	tradeIntervalLimit := 5.0
+	tradeIntervalLimit := 3.0
 	var kdatHandler KDATCalculator
 	kdatHandler.Register(&basicHandler)
 	kdatHandler.Setup(tradeIntervalLimit)
@@ -2299,17 +2333,17 @@ func processDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	var popHandler poppingGrenadeHandler
 	popHandler.SetBaseIcons()
 	popHandler.Register(&basicHandler)
-	//allIconGenerators = append(allIconGenerators, &popHandler)
+	allIconGenerators = append(allIconGenerators, &popHandler)
 
 	var bmbHandler bombHandler
 	bmbHandler.Register(&basicHandler)
 	allTabularGenerators = append(allTabularGenerators, &bmbHandler)
-	//allIconGenerators = append(allIconGenerators, &bmbHandler)
+	allIconGenerators = append(allIconGenerators, &bmbHandler)
 
 	var playerHandler playerPeriodicInfoHandler
 	playerHandler.Register(&basicHandler)
 	allTabularGenerators = append(allTabularGenerators, &playerHandler)
-	//allIconGenerators = append(allIconGenerators, &playerHandler)
+	allIconGenerators = append(allIconGenerators, &playerHandler)
 
 	var infoHandler infoGenerationHandler
 	updateInterval := 1.5 //1.5s between framegroups
@@ -2334,7 +2368,7 @@ func main() {
 	tickRate, _ := strconv.Atoi(os.Args[4])
 	flag.Parse()
 	if *mode == "file" {
-		processDemoFile(demPath, fileID, destDir, tickRate)
+		ProcessDemoFile(demPath, fileID, destDir, tickRate)
 	} else if *mode == "dir" {
 
 		filepath.Walk(demPath, func(path string, info os.FileInfo, err error) error {
@@ -2345,7 +2379,7 @@ func main() {
 			if info.IsDir() {
 				return nil
 			}
-			processDemoFile(path, fileID, destDir, tickRate)
+			ProcessDemoFile(path, fileID, destDir, tickRate)
 			fileID++
 			return nil
 		})
@@ -2451,17 +2485,19 @@ func insertMatch(dbConn *sql.DB, fileName string, demFileHash string, mapName st
 	checkError(err)
 	_, err = insForm.Exec(terroristFirstTeamScore, ctFirstTeamScore, mapName, dt, demFileHash, fileName)
 	insForm.Close()
-	if err.(*mysql.MySQLError).Number == 1062 {
-		fmt.Println("Demo file already in database")
-		if overwriteMatch {
-			fmt.Println("Overwrite mode on. Deleting old data.")
-			insForm, err = dbConn.Prepare("DELETE STATISTICS_PLAYER_MATCH_FACT FROM STATISTICS_PLAYER_MATCH_FACT INNER JOIN " +
-				"CSGO_MATCH ON STATISTICS_PLAYER_MATCH_FACT.idCSGO_MATCH = CSGO_MATCH.idCSGO_MATCH WHERE CSGO_MATCH.DEMO_FILE_HASH = ?")
-			_, err = insForm.Exec(demFileHash)
-			insForm.Close()
-			checkError(err)
-		} else {
-			checkError(err)
+	if err != nil {
+		if err.(*mysql.MySQLError).Number == 1062 {
+			fmt.Println("Demo file already in database")
+			if overwriteMatch {
+				fmt.Println("Overwrite mode on. Deleting old data.")
+				insForm, err = dbConn.Prepare("DELETE STATISTICS_PLAYER_MATCH_FACT FROM STATISTICS_PLAYER_MATCH_FACT INNER JOIN " +
+					"CSGO_MATCH ON STATISTICS_PLAYER_MATCH_FACT.idCSGO_MATCH = CSGO_MATCH.idCSGO_MATCH WHERE CSGO_MATCH.DEMO_FILE_HASH = ?")
+				_, err = insForm.Exec(demFileHash)
+				insForm.Close()
+				checkError(err)
+			} else {
+				checkError(err)
+			}
 		}
 	}
 

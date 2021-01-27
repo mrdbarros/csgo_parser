@@ -94,10 +94,11 @@ func Abs(x int) int {
 	return x
 }
 
-func IndexOf(element string, data []string) int {
+func IndexOf(element string, data []string) (index int) {
 	for k, v := range data {
 		if element == v {
-			return k
+			index = k
+			return index
 		}
 	}
 	return -1 //not found.
