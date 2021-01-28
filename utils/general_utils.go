@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"encoding/csv"
+	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -102,4 +105,52 @@ func IndexOf(element string, data []string) (index int) {
 		}
 	}
 	return -1 //not found.
+}
+
+func CheckError(err error) {
+	if err != nil {
+		print("error!")
+		panic(err)
+	}
+}
+
+// Exists returns whether the given file or directory exists
+func Exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return true, err
+}
+
+func RemoveContents(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	names, err := d.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		err = os.RemoveAll(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func WriteToCSV(data [][]string, filePath string) {
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, os.ModeAppend)
+	CheckError(err)
+	writer := csv.NewWriter(file)
+
+	err = writer.WriteAll(data)
+	CheckError(err)
+	defer file.Close()
 }

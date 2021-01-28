@@ -1,13 +1,18 @@
-package utils
+package map_builder
 
 import (
 	"image"
 	"image/color"
 	"image/draw"
+	"image/jpeg"
 	_ "image/png" //png thru image.decode
+	"log"
 	"os"
+	"strconv"
 
 	"github.com/disintegration/imaging"
+	"github.com/mrdbarros/csgo_analyze/utils"
+	"github.com/nfnt/resize"
 )
 
 //const for names because go doesn't have proper enum
@@ -140,4 +145,22 @@ func (mapGenerator MapGenerator) DrawMap(iconLists [][]Icon) []*(image.NRGBA) {
 	}
 
 	return roundImages
+}
+
+func GenerateRoundMaps(mapGenerator MapGenerator, iconLists [][]Icon, roundPath string, imgSize int) {
+	roundMaps := mapGenerator.DrawMap(iconLists)
+	for imageIndex, imgOriginal := range roundMaps {
+		img := resize.Resize(uint(imgSize), 0, imgOriginal, resize.Bilinear)
+		third, err := os.Create(roundPath + "/output_map" +
+			utils.PadLeft(strconv.Itoa(imageIndex), "0", 2) + ".jpg")
+		if err != nil {
+			log.Fatalf("failed to create: %s", err)
+		}
+		err = jpeg.Encode(third, img, &jpeg.Options{jpeg.DefaultQuality})
+		checkError(err)
+		imageIndex++
+		third.Close()
+
+	}
+
 }

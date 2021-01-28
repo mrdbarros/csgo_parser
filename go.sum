@@ -11,10 +11,6 @@ github.com/gogo/protobuf v1.3.1/go.mod h1:SlYgWuQ5SjCEi6WLHjHCa1yvBfUnHcTbrrZtXP
 github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0/go.mod h1:E/TSTwGwJL78qG/PmXZO1EjYhfJinVAhrmmHX6Z8B9k=
 github.com/golang/geo v0.0.0-20180826223333-635502111454/go.mod h1:vgWZ7cu0fq0KY3PpEHsocXOWJpRtkcbKemU4IUw0M60=
 github.com/golang/geo v0.0.0-20190916061304-5b978397cfec/go.mod h1:QZ0nwyI2jOfgRAoBvP+ab5aRr7c9x7lhGEJrKvBwjWI=
-github.com/golang/geo v0.0.0-20200319012246-673a6f80352d h1:C/hKUcHT483btRbeGkrRjJz+Zbcj8audldIi9tRJDCc=
-github.com/golang/geo v0.0.0-20200319012246-673a6f80352d/go.mod h1:QZ0nwyI2jOfgRAoBvP+ab5aRr7c9x7lhGEJrKvBwjWI=
-github.com/golang/geo v0.0.0-20200730024412-e86565bf3f35 h1:enTowfyfjtomBQhxX9mhUD+0tZhpe4rIzStO4aNlou8=
-github.com/golang/geo v0.0.0-20200730024412-e86565bf3f35/go.mod h1:QZ0nwyI2jOfgRAoBvP+ab5aRr7c9x7lhGEJrKvBwjWI=
 github.com/golang/geo v0.0.0-20210108004804-a63082ebfb66 h1:wNA26/2ftrz6nI4dbIim6OSKtLlNdjpNiwFB+l/yqtQ=
 github.com/golang/geo v0.0.0-20210108004804-a63082ebfb66/go.mod h1:QZ0nwyI2jOfgRAoBvP+ab5aRr7c9x7lhGEJrKvBwjWI=
 github.com/kisielk/errcheck v1.2.0/go.mod h1:/BMXB+zMLi60iA8Vv6Ksmxu/1UDYcXs4uQLJ+jE2L00=
@@ -23,11 +19,6 @@ github.com/llgcode/draw2d v0.0.0-20180124133339-274031cf2abe/go.mod h1:th5ThsEAh
 github.com/llgcode/ps v0.0.0-20150911083025-f1443b32eedb/go.mod h1:1l8ky+Ew27CMX29uG+a2hNOKpeNYEQjjtiALiBlFQbY=
 github.com/markus-wa/demoinfocs-golang v1.10.0 h1:XgGsUG2jBIWT6yqkKqWg3Xh671acQiilDi4/xrKNwTY=
 github.com/markus-wa/demoinfocs-golang v1.10.0/go.mod h1:89I5cRCmxICDQHt0KzWURFhGgKstC1rwqUrsmVckDcM=
-github.com/markus-wa/demoinfocs-golang v1.11.0 h1:0VSWmeZ8kOeQIpit1+Kisf2KLtcCosNTjzPxhQkDdO8=
-github.com/markus-wa/demoinfocs-golang/v2 v2.2.0 h1:giTibTL0VVcwcJ191ZmaOdjLaBRkkIb4nLxaEq5M1lI=
-github.com/markus-wa/demoinfocs-golang/v2 v2.2.0/go.mod h1:yLydbjqMxvbIQWYOC8MbQpDPclIU9cRe/OFkCZ+VdEI=
-github.com/markus-wa/demoinfocs-golang/v2 v2.3.0 h1:rXw4pSeSHL7b+/Ip2vRNeyYI1ho/hsprhP02RjCQqgo=
-github.com/markus-wa/demoinfocs-golang/v2 v2.3.0/go.mod h1:qjgSVfhCIrr6Gf6ZjN0ZCGhl5bPC4rSVhc3cIpVkFWI=
 github.com/markus-wa/demoinfocs-golang/v2 v2.5.0 h1:q56nV+pO8DWE8qg14+IIRHc21MY6iAYpSJ3IT8b25WE=
 github.com/markus-wa/demoinfocs-golang/v2 v2.5.0/go.mod h1:qjgSVfhCIrr6Gf6ZjN0ZCGhl5bPC4rSVhc3cIpVkFWI=
 github.com/markus-wa/go-unassert v0.1.2 h1:uXWlMDa8JVtc4RgNq4XJIjyRejv9MOVuy/E0VECPxxo=
@@ -44,8 +35,6 @@ github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 h1:zYyBkD/k9seD2A7fsi6
 github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646/go.mod h1:jpp1/29i3P1S/RLdc7JQKbRpFeM1dOBd8T9ki5s+AY8=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/robfig/graphics-go v0.0.0-20140921172951-05ad18ff57b8 h1:nALBxWwN8WSuD07aeNFHeAmZuhmnSRwe5Gsm1Ot9Ggg=
-github.com/robfig/graphics-go v0.0.0-20140921172951-05ad18ff57b8/go.mod h1:UhxOJ1SGO9++OqPHfPRqgpuryOTAvKRZHzSyjEk8tjk=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.1.1 h1:2vfRuCMp5sSVIDSqO8oNnWJq7mPa6KVP3iPIwFBuy8A=
 github.com/stretchr/objx v0.1.1/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
