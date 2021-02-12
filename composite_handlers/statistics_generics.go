@@ -16,38 +16,47 @@ type statisticHolder struct {
 }
 
 func (kc statisticHolder) GetRoundStatistic(roundNumber int, userID uint64) ([]string, []float64, error) {
+	if roundNumber > len(kc.playerStats) {
+		// fmt.Println("Invalid round number")
+		return nil, nil, nil
+	} else {
+		return kc.baseStatsHeaders, kc.playerStats[roundNumber-1][userID], nil
+	}
 
-	return kc.baseStatsHeaders, kc.playerStats[roundNumber-1][userID], nil
 }
 
 func (kc *statisticHolder) addToPlayerStat(player *common.Player, addAmount float64, stat string) {
-	isCT := (player.Team == 3)
-	var suffix string
-	kc.playerStats[len(kc.playerStats)-1][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] += addAmount
-	if isCT {
-		suffix = "_CT"
-	} else {
-		suffix = "_T"
+	if _, ok := kc.playerStats[len(kc.playerStats)-1][player.SteamID64]; ok {
+		isCT := (player.Team == 3)
+		var suffix string
+		kc.playerStats[len(kc.playerStats)-1][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] += addAmount
+		if isCT {
+			suffix = "_CT"
+		} else {
+			suffix = "_T"
+		}
+		if utils.IndexOf(stat+suffix, kc.baseStatsHeaders) != -1 {
+			kc.playerStats[len(kc.playerStats)-1][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] += addAmount
+		}
 	}
-	if utils.IndexOf(stat+suffix, kc.baseStatsHeaders) != -1 {
-		kc.playerStats[len(kc.playerStats)-1][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] += addAmount
-	}
+
 }
 
 func (kc *statisticHolder) setPlayerStat(player *common.Player, value float64, stat string) {
-	isCT := (player.Team == 3)
-	var suffix string
-	roundID := len(kc.playerStats) - 1
-	kc.playerStats[roundID][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] = value
-	if isCT {
-		suffix = "_CT"
-	} else {
-		suffix = "_T"
+	if _, ok := kc.playerStats[len(kc.playerStats)-1][player.SteamID64]; ok {
+		isCT := (player.Team == common.TeamCounterTerrorists)
+		var suffix string
+		roundID := len(kc.playerStats) - 1
+		kc.playerStats[roundID][player.SteamID64][utils.IndexOf(stat, kc.baseStatsHeaders)] = value
+		if isCT {
+			suffix = "_CT"
+		} else {
+			suffix = "_T"
+		}
+		if utils.IndexOf(stat+suffix, kc.baseStatsHeaders) != -1 {
+			kc.playerStats[roundID][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] = value
+		}
 	}
-	if utils.IndexOf(stat+suffix, kc.baseStatsHeaders) != -1 {
-		kc.playerStats[roundID][player.SteamID64][utils.IndexOf(stat+suffix, kc.baseStatsHeaders)] = value
-	}
-
 }
 
 func (sh *statisticHolder) getPlayerStat(player *common.Player, stat string) float64 {
@@ -63,6 +72,9 @@ func (sh *statisticHolder) GetMatchStatistic(userID uint64) ([]string, []float64
 	for _, roundStatMap := range sh.playerStats { //roundStatMap is map[uint64][]float64 of all base stats of the round
 		if playerStat, ok := roundStatMap[userID]; ok { //get stats for specific player and round
 			consolidatedStat = utils.ElementWiseSum(consolidatedStat, playerStat)
+			// if userID == 76561197976402790 && sh.baseStatsHeaders[0] == "Rounds" {
+			// 	fmt.Println("round", i+1, "rounds:", consolidatedStat[0], "rounds_t:", consolidatedStat[1], "rounds_ct", consolidatedStat[2])
+			// }
 		}
 
 	}

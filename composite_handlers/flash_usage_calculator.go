@@ -3,6 +3,8 @@ package composite_handlers
 import (
 	"github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/common"
 	events "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/events"
+	"github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/sendtables"
+	map_builder "github.com/mrdbarros/csgo_analyze/map_builder"
 	utils "github.com/mrdbarros/csgo_analyze/utils"
 )
 
@@ -26,9 +28,8 @@ func (fc *FlashUsageCalculator) Register(bh *BasicHandler) error {
 	bh.RegisterFlashExplodeSubscriber(interface{}(fc).(FlashExplodeSubscriber))
 	bh.RegisterKillSubscriber(interface{}(fc).(KillSubscriber))
 	bh.RegisterPlayerFlashedSubscriber(interface{}(fc).(PlayerFlashedSubscriber))
-	bh.RegisterRoundEndOfficialSubscriber(interface{}(fc).(RoundEndOfficialSubscriber))
 	bh.RegisterRoundFreezetimeEndSubscriber(interface{}(fc).(RoundFreezetimeEndSubscriber))
-	bh.RegisterRoundEndSubscriber(interface{}(fc).(RoundEndSubscriber))
+	bh.RegisterRoundEndOfficialSubscriber(interface{}(fc).(RoundEndOfficialSubscriber))
 	fc.baseStatsHeaders = []string{"Flashes Thrown", "Flashes Thrown_T", "Flashes Thrown_CT",
 		"Enemies Blinded", "Enemies Blinded_T", "Enemies Blinded_CT",
 		"Teammates Blinded", "Teammates Blinded_T", "Teammates Blinded_CT",
@@ -40,25 +41,20 @@ func (fc *FlashUsageCalculator) Register(bh *BasicHandler) error {
 		"Net Flashes Leading To Death (Enemies-Teammates)", "Net Flashes Leading To Death (Enemies-Teammates)_T", "Net Flashes Leading To Death (Enemies-Teammates)_CT",
 		"Net Blind Time (Enemies-Teammates)", "Net Blind Time (Enemies-Teammates)_T", "Net Blind Time (Enemies-Teammates)_CT",
 	}
-	fc.ratioStats = append(fc.ratioStats, [3]string{"Enemies Blinded Per Flash", "Enemies Blinded", "Flashes Thrown"})
-	fc.ratioStats = append(fc.ratioStats, [3]string{"Teammates Blinded Per Flash", "Teammates Blinded", "Flashes Thrown"})
-	fc.ratioStats = append(fc.ratioStats, [3]string{"Net Players Blinded Per Flash", "Net Players Blinded (Enemies-Teammates)", "Flashes Thrown"})
-	fc.ratioStats = append(fc.ratioStats, [3]string{"Net Flashes Leading To Death Per Flash", "Net Flashes Leading To Death (Enemies-Teammates)", "Flashes Thrown"})
-	fc.ratioStats = append(fc.ratioStats, [3]string{"Average Blind Time Per Flash", "Net Blind Time (Enemies-Teammates)", "Flashes Thrown"})
-	fc.ratioStats = append(fc.ratioStats, [3]string{"Flashes Thrown Per Round", "Flashes Thrown", "Rounds"})
+
 	fc.defaultValues = make(map[string]float64)
 	fc.blindPlayers = make(map[uint64]flashInfo)
 	return nil
 }
 
 func (fc *FlashUsageCalculator) RoundStartHandler(e events.RoundStart) {
-	if fc.basicHandler.roundNumber-1 < len(fc.playerStats) {
-		fc.playerStats = fc.playerStats[:fc.basicHandler.roundNumber-1]
-	}
+
 }
 
 func (fc *FlashUsageCalculator) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
-
+	if fc.basicHandler.roundNumber-1 < len(fc.playerStats) {
+		fc.playerStats = fc.playerStats[:fc.basicHandler.roundNumber-1]
+	}
 	fc.AddNewRound()
 }
 
@@ -70,11 +66,9 @@ func (fc *FlashUsageCalculator) FlashExplodeHandler(e events.FlashExplode) {
 
 }
 
-func (fc *FlashUsageCalculator) RoundEndHandler(e events.RoundEnd) {
+func (fc *FlashUsageCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
 
-	if fc.basicHandler.isMatchEnded {
-		fc.processRoundEnd()
-	}
+	fc.processRoundEnd()
 
 }
 
@@ -109,12 +103,12 @@ func (fc *FlashUsageCalculator) processRoundEnd() {
 	}
 }
 
-func (fc *FlashUsageCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
-	if !fc.basicHandler.isMatchEnded {
-		fc.processRoundEnd()
-	}
+// func (fc *FlashUsageCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+// 	if !fc.basicHandler.isMatchEnded {
+// 		fc.processRoundEnd()
+// 	}
 
-}
+// }
 
 func (fc *FlashUsageCalculator) KillHandler(e events.Kill) {
 
@@ -166,4 +160,50 @@ func (fc *FlashUsageCalculator) PlayerFlashedHandler(e events.PlayerFlashed) {
 		}
 	}
 
+}
+
+func (fc *FlashUsageCalculator) Update() {
+}
+
+func (fc *FlashUsageCalculator) GetPeriodicIcons() ([]map_builder.Icon, error) {
+	var flashIcons []map_builder.Icon
+	var flashTimeLeft float64
+	var flashIcon map_builder.Icon
+	var playerMaskIcon map_builder.Icon
+	var opacity int
+	var projectileMap map[sendtables.Entity]int
+	var suffix string
+	projectileMap = make(map[sendtables.Entity]int)
+	for _, flashInfo := range fc.blindPlayers {
+		if flashInfo.blindnessEndtime >= fc.basicHandler.currentTime && flashInfo.victim.IsAlive() {
+			flashTimeLeft = flashInfo.blindnessEndtime - fc.basicHandler.currentTime
+
+			if _, ok := projectileMap[flashInfo.attacker.Entity]; !ok {
+				flashIcon = map_builder.Icon{X: flashInfo.projectile.Position().X,
+					Y:        flashInfo.projectile.Position().Y,
+					IconName: "flashbang"}
+				flashIcons = append(flashIcons, flashIcon)
+				if flashInfo.attacker.Team == common.TeamCounterTerrorists {
+					suffix = "_ct"
+				} else if flashInfo.attacker.Team == common.TeamTerrorists {
+					suffix = "_t"
+				}
+				flashIcon = map_builder.Icon{X: flashInfo.projectile.Position().X,
+					Y:        flashInfo.projectile.Position().Y,
+					IconName: "flashbang" + suffix}
+				flashIcons = append(flashIcons, flashIcon)
+				projectileMap[flashInfo.projectile.Entity] = 0
+			}
+			opacity = int((flashTimeLeft / 6.) * 255)
+			if opacity > 255 {
+				opacity = 255
+			}
+			playerMaskIcon = map_builder.Icon{X: flashInfo.victim.LastAlivePosition.X,
+				Y:        flashInfo.victim.LastAlivePosition.Y,
+				IconName: "flashbang_mask",
+				Opacity:  opacity}
+			flashIcons = append(flashIcons, playerMaskIcon)
+		}
+	}
+	return flashIcons, nil
 }

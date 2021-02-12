@@ -4,7 +4,6 @@ import (
 	"github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/common"
 	events "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/events"
 	map_builder "github.com/mrdbarros/csgo_analyze/map_builder"
-	utils "github.com/mrdbarros/csgo_analyze/utils"
 )
 
 type PoppingGrenadeHandler struct {
@@ -33,8 +32,7 @@ func (ph *PoppingGrenadeHandler) GrenadeEventIfHandler(e events.GrenadeEventIf) 
 
 	// if molly, incgrenade or smoke
 	if e.Base().GrenadeType == common.EqSmoke || e.Base().GrenadeType == common.EqIncendiary || e.Base().GrenadeType == common.EqMolotov {
-		parser := *(ph.basicHandler.parser)
-		eventTime := utils.GetCurrentTime(parser, ph.basicHandler.tickRate)
+		eventTime := ph.basicHandler.currentTime
 		grenadeEntityID := e.Base().GrenadeEntityID
 		if ph.IsTracked(grenadeEntityID) {
 			ph.RemoveGrenade(grenadeEntityID)
@@ -61,7 +59,7 @@ func (ph *PoppingGrenadeHandler) GetPeriodicIcons() ([]map_builder.Icon, error) 
 	var iconList []map_builder.Icon
 	for _, activeGrenade := range ph.activeGrenades {
 		newIcon := ph.baseIcons[activeGrenade.grenadeEvent.GrenadeType]
-		x, y := ph.basicHandler.mapMetadata.TranslateScale(activeGrenade.grenadeEvent.Position.X, activeGrenade.grenadeEvent.Position.Y)
+		x, y := activeGrenade.grenadeEvent.Position.X, activeGrenade.grenadeEvent.Position.Y
 		newIcon.X, newIcon.Y = x, y
 		iconList = append(iconList, newIcon)
 	}

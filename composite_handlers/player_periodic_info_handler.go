@@ -254,7 +254,7 @@ func (bg *basicPlayerPositionGatherer) Setup(basicHandler *BasicHandler) {
 func (bg *basicPlayerPositionGatherer) updatePlayer(player *common.Player, basePos int) {
 
 	if player.Health() > 0 {
-		x, y := bg.playersIconGatherer.mapMetadata.TranslateScale(player.Position().X, player.Position().Y)
+		x, y := player.Position().X, player.Position().Y
 		var icon string
 
 		if basePos/5 == 1 {

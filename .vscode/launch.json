@@ -12,9 +12,9 @@
       "program": "${fileDirname}",
       "env": {},
       "args": ["-mode=file",
-        "/home/marcel/projetos/data/csgo_analyze/replays/0/2021-01-16__0214__1__10469660__de_overpass__timegui__vs__c4base.dem",
-        "/home/marcel/projetos/data/csgo_analyze/processed/gc/",
-        32,
+        "/home/marcel/projetos/data/csgo_analyze/replays/fev/2021-02-09__0059__1__10768066__de_vertigo__timesant__vs__c4base.dem",
+        "/home/marcel/projetos/data/csgo_analyze/processed/test",
+        64,
       ]
     },
     {
@@ -25,9 +25,9 @@
       "program": "${fileDirname}",
       "env": {},
       "args": ["-mode=dir",
-        "/home/marcel/projetos/data/csgo_analyze/replays/0",
-        "/home/marcel/projetos/data/csgo_analyze/processed/gc",
-        32,
+        "/home/marcel/projetos/data/csgo_analyze/replays/fev",
+        "/home/marcel/projetos/data/csgo_analyze/camp",
+        64,
       ]
     },
     {

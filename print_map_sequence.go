@@ -10,15 +10,16 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
+
+	"github.com/mrdbarros/csgo_analyze/database"
 
 	dem "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs"
 	metadata "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/metadata"
 	"github.com/mrdbarros/csgo_analyze/composite_handlers"
-	map_builder "github.com/mrdbarros/csgo_analyze/map_builder"
+
 	utils "github.com/mrdbarros/csgo_analyze/utils"
 )
-
-//var allPlayers = make(map[int]*playerMapping)
 
 func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	fileStat, err := os.Stat(demPath)
@@ -38,6 +39,11 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	utils.CheckError(err)
 	defer f.Close()
 
+	hashString := hex.EncodeToString(hasher.Sum(nil))
+
+	dbConn := database.OpenDBConn()
+	skipProcessedFile := false
+
 	f, err = os.Open(demPath)
 	utils.CheckError(err)
 
@@ -47,24 +53,30 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	utils.CheckError(err)
 
 	fmt.Println("Map:", header.MapName)
-	rootMatchPath := destDir + "/" + header.MapName + "/" + strconv.Itoa(fileID)
+	rootMatchPath := destDir + "/" + header.MapName + "/" + hashString
 	dirExists, _ := utils.Exists(rootMatchPath)
+
+	if database.CheckIfProcessed(dbConn, hashString) && skipProcessedFile && dirExists {
+		fmt.Println("Demo already processed, skipping...")
+		dbConn.Close()
+		return
+	} else {
+		dbConn.Close()
+	}
+
 	if !dirExists {
 		err = os.MkdirAll(rootMatchPath, 0700)
 		utils.CheckError(err)
 	}
 
-	imgSize := 300
+	imgSize := 800
 
 	mapMetadata := metadata.MapNameToMap[header.MapName]
-	var mapGenerator map_builder.MapGenerator
 	var allIconGenerators []composite_handlers.PeriodicIconGenerator
 	var allStatGenerators []composite_handlers.StatGenerator
 	var allTabularGenerators []composite_handlers.PeriodicTabularGenerator
 	var allPlayerStatCalculators []composite_handlers.PlayerStatisticCalculator
 	var basicHandler composite_handlers.BasicHandler
-
-	mapGenerator.Setup(header.MapName, imgSize)
 
 	basicHandler.Setup(&p, tickRate, mapMetadata, fileStat.ModTime(), fileName)
 	basicHandler.RegisterBasicEvents()
@@ -88,22 +100,28 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	var popHandler composite_handlers.PoppingGrenadeHandler
 	popHandler.SetBaseIcons()
 	popHandler.Register(&basicHandler)
-	allIconGenerators = append(allIconGenerators, &popHandler)
 
 	var bmbHandler composite_handlers.BombHandler
 	bmbHandler.Register(&basicHandler)
 	allTabularGenerators = append(allTabularGenerators, &bmbHandler)
-	allIconGenerators = append(allIconGenerators, &bmbHandler)
+	allPlayerStatCalculators = append(allPlayerStatCalculators, &bmbHandler)
 
 	var playerHandler composite_handlers.PlayerPeriodicInfoHandler
 	playerHandler.Register(&basicHandler)
 	allTabularGenerators = append(allTabularGenerators, &playerHandler)
-	allIconGenerators = append(allIconGenerators, &playerHandler)
+
+	generateIcons := false
+	if generateIcons {
+		allIconGenerators = append(allIconGenerators, &popHandler)
+		allIconGenerators = append(allIconGenerators, &bmbHandler)
+		allIconGenerators = append(allIconGenerators, &playerHandler)
+		allIconGenerators = append(allIconGenerators, &flashCalc)
+	}
 
 	var infoHandler composite_handlers.InfoGenerationHandler
-	updateInterval := 1.5 //1.5s between framegroups
+	updateInterval := 2.0 //# of seconds between framegroups
 	infoHandler.Register(&basicHandler)
-	infoHandler.Setup(imgSize, updateInterval, rootMatchPath, hex.EncodeToString(hasher.Sum(nil)),
+	infoHandler.Setup(imgSize, updateInterval, rootMatchPath, hashString,
 		&allIconGenerators, &allTabularGenerators, &allStatGenerators, &allPlayerStatCalculators)
 
 	err = p.ParseToEnd()
@@ -112,6 +130,21 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	utils.CheckError(err)
 
 	// Parse to end
+}
+
+type demoFile struct {
+	demPath  string
+	fileID   int
+	destDir  string
+	tickRate int
+}
+
+func worker(wg *sync.WaitGroup, jobChan <-chan demoFile) {
+	defer wg.Done()
+	for demFile := range jobChan {
+		fmt.Println("Demos left:", len(jobChan))
+		ProcessDemoFile(demFile.demPath, demFile.fileID, demFile.destDir, demFile.tickRate)
+	}
 }
 
 func main() {
@@ -125,6 +158,17 @@ func main() {
 	if *mode == "file" {
 		ProcessDemoFile(demPath, fileID, destDir, tickRate)
 	} else if *mode == "dir" {
+		workerCount := 7
+		// use a WaitGroup
+		var wg sync.WaitGroup
+
+		// make a channel with a capacity of 100.
+		jobChan := make(chan demoFile, 500)
+
+		for i := 0; i < workerCount; i++ {
+			go worker(&wg, jobChan)
+		}
+		wg.Add(workerCount)
 
 		filepath.Walk(demPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -134,10 +178,12 @@ func main() {
 			if info.IsDir() {
 				return nil
 			}
-			ProcessDemoFile(path, fileID, destDir, tickRate)
+			// enqueue a job
+			jobChan <- demoFile{demPath: path, fileID: fileID, destDir: destDir, tickRate: tickRate}
 			fileID++
 			return nil
 		})
+		wg.Wait()
 
 	} else {
 		log.Fatal("invalid mode.")

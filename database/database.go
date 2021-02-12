@@ -17,6 +17,20 @@ func InsertPlayer(dbConn *sql.DB, playerID uint64, playerName string) {
 	insForm.Close()
 }
 
+func CheckIfProcessed(dbConn *sql.DB, demFileHash string) bool {
+
+	sqlResult, err := dbConn.Query("SELECT idCSGO_MATCH FROM CSGO_MATCH WHERE DEMO_FILE_HASH=?", demFileHash)
+	utils.CheckError(err)
+	if sqlResult.Next() {
+		sqlResult.Close()
+		return true
+	} else {
+		sqlResult.Close()
+		return false
+	}
+
+}
+
 func InsertMatch(dbConn *sql.DB, fileName string, demFileHash string, mapName string, terroristFirstTeamScore int, ctFirstTeamScore int,
 	matchDateTime time.Time, overwriteMatch bool) (matchID int) {
 

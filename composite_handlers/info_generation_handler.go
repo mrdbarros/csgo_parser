@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	events "github.com/markus-wa/demoinfocs-golang/v2/pkg/demoinfocs/events"
@@ -73,7 +74,6 @@ func (ih *InfoGenerationHandler) Register(bh *BasicHandler) error {
 	bh.RegisterRoundStartSubscriber(interface{}(ih).(RoundStartSubscriber))
 	bh.RegisterFrameDoneSubscriber(interface{}(ih).(FrameDoneSubscriber))
 	bh.RegisterRoundEndOfficialSubscriber(interface{}(ih).(RoundEndOfficialSubscriber))
-	bh.RegisterRoundEndSubscriber(interface{}(ih).(RoundEndSubscriber))
 
 	return nil
 }
@@ -86,8 +86,18 @@ func (ih *InfoGenerationHandler) RoundStartHandler(e events.RoundStart) {
 		ih.roundEndRegistered = false
 
 		if !dirExists {
-			err := os.MkdirAll(ih.roundDirPath, 0700)
+			matches, err := filepath.Glob(ih.rootMatchPath + "/" +
+				utils.PadLeft(strconv.Itoa(ih.basicHandler.roundNumber), "0", 2) + "*")
 			utils.CheckError(err)
+			if len(matches) > 0 {
+				for _, oldDir := range matches {
+					utils.RemoveContents(oldDir)
+					os.Remove(oldDir)
+				}
+			}
+			err = os.MkdirAll(ih.roundDirPath, 0700)
+			utils.CheckError(err)
+
 		} else {
 			utils.RemoveContents(ih.roundDirPath)
 		}
@@ -203,7 +213,7 @@ func (ih *InfoGenerationHandler) processRoundEnd() {
 		allTabularData := append([][]string{ih.matchData.matchPeriodicTabularDataHeaders}, utils.FloatMatrixToString(ih.matchData.matchPeriodicTabularData[ih.basicHandler.roundNumber-1])...)
 
 		map_builder.GenerateRoundMaps(ih.mapGenerator, ih.matchData.matchIcons[ih.basicHandler.roundNumber-1],
-			ih.roundDirPath, ih.imgSize)
+			ih.roundDirPath)
 		utils.WriteToCSV(allTabularData, ih.roundTabularPath)
 		utils.WriteToCSV(generalStatistics, ih.roundStatPath)
 		utils.WriteToCSV(playerStatistics, ih.playerStatPath)
@@ -213,18 +223,15 @@ func (ih *InfoGenerationHandler) processRoundEnd() {
 	}
 }
 
+// func (ih *InfoGenerationHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+// 	if !ih.basicHandler.isMatchEnded {
+// 		ih.processRoundEnd()
+// 	}
+
+// }
+
 func (ih *InfoGenerationHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
-	if !ih.basicHandler.isMatchEnded {
-		ih.processRoundEnd()
-	}
-
-}
-
-func (ih *InfoGenerationHandler) RoundEndHandler(e events.RoundEnd) {
-	if ih.basicHandler.isMatchEnded {
-		ih.processRoundEnd()
-	}
-
+	ih.processRoundEnd()
 }
 
 func (ih *InfoGenerationHandler) checkAndGenerateMatchEndStatistics() {
@@ -299,6 +306,7 @@ func (ih *InfoGenerationHandler) GetFullMatchStatistics() (data [][]string) {
 
 	}
 	data = append(data, framedData...)
+	dbConn.Close()
 	return data
 
 }
@@ -329,7 +337,7 @@ func (ih *InfoGenerationHandler) Setup(imgSize int, updateInterval float64, root
 	allStatGenerators *[]StatGenerator, allPlayerStatCalculators *[]PlayerStatisticCalculator) error {
 
 	var mapGenerator map_builder.MapGenerator
-	mapGenerator.Setup(ih.basicHandler.mapMetadata.Name, imgSize)
+	mapGenerator.Setup(ih.basicHandler.mapMetadata, imgSize)
 	ih.mapGenerator = mapGenerator
 	ih.updateInterval = updateInterval
 	ih.matchData = new(matchData)

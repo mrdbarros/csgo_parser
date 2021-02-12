@@ -106,10 +106,14 @@ type BasicHandler struct {
 	roundWinner             string
 	matchPointTeam          string
 	isMatchEnded            bool
-	isValidRound            bool
+	isValidRoundStart       bool
+	roundStructureCreated   bool
 	terroristFirstTeamscore int
 	ctFirstTeamScore        int
 	fileName                string
+	roundWinnerDetermined   bool
+	roundProcessed          bool
+	scoreUpdated            bool
 	playerMappings          []map[uint64]playerMapping
 	matchDatetime           time.Time
 }
@@ -129,6 +133,8 @@ func (bh *BasicHandler) RegisterBasicEvents() error {
 	bh.roundEndHandlerID = parser.RegisterEventHandler(bh.RoundEndHandler)
 	bh.roundFreezeTimeEndHandlerID = parser.RegisterEventHandler(bh.RoundFreezetimeEndHandler)
 	bh.playerDisconnectedHandlerID = parser.RegisterEventHandler(bh.PlayerDisconnectedHandler)
+	bh.scoreUpdatedHandlerID = parser.RegisterEventHandler(bh.ScoreUpdatedHandler)
+	bh.footstepHandlerID = parser.RegisterEventHandler(bh.FootstepHandler)
 	return nil
 }
 
@@ -149,9 +155,9 @@ func (bh *BasicHandler) UpdateTime() {
 }
 
 func (bh *BasicHandler) GetPeriodicTabularData() ([]string, []float64, error) {
-	parser := *(bh.parser)
+	bh.UpdateTime()
 	newCSVRow := []float64{0}
-	currentRoundTime := utils.GetCurrentTime(parser, bh.tickRate)
+	currentRoundTime := bh.currentTime
 
 	newCSVRow[0] = currentRoundTime - bh.roundStartTime
 	header := []string{"round_time"}
@@ -169,19 +175,28 @@ func (bh *BasicHandler) RegisterRoundStartSubscriber(rs RoundStartSubscriber) {
 
 }
 
-func (bh *BasicHandler) RoundStartHandler(e events.RoundStart) {
-	bh.UpdateTime()
-	parser := *(bh.parser)
-	gs := parser.GameState()
+//this a workaround for demos that update score after round start event (wtf)
+func (bh *BasicHandler) createPreRoundStartInfo() {
 
+	parser := *(bh.parser)
+	bh.scoreUpdated = false
+	gs := parser.GameState()
+	bh.roundStructureCreated = false
 	currentMappings := currentPlayerMappings(parser.GameState())
 
-	if len(currentMappings) > 0 && !bh.isMatchEnded && !gs.IsWarmupPeriod() {
-		bh.isValidRound = true
+	bh.roundNumber = gs.TeamCounterTerrorists().Score() + gs.TeamTerrorists().Score() + 1
+	if len(currentMappings) > 0 && !bh.isMatchEnded && !gs.IsWarmupPeriod() && bh.roundNumber-1 <= len(bh.playerMappings) {
+		bh.isValidRoundStart = true
 	} else {
-		bh.isValidRound = false
+		bh.isValidRoundStart = false
 	}
-	if bh.isValidRound {
+
+	if bh.isValidRoundStart {
+		bh.roundWinnerDetermined = false
+		bh.roundFreezeTime = true
+		bh.roundWinner = ""
+		bh.frameGroup = 0
+		bh.isMatchStarted = true
 		tTeam := gs.TeamTerrorists()
 		ctTeam := gs.TeamCounterTerrorists()
 
@@ -195,18 +210,9 @@ func (bh *BasicHandler) RoundStartHandler(e events.RoundStart) {
 		} else {
 			bh.matchPointTeam = ""
 		}
-
-		bh.roundFreezeTime = true
-		bh.roundWinner = ""
-		bh.frameGroup = 0
-		bh.isMatchStarted = true
-		bh.roundNumber = gs.TeamCounterTerrorists().Score() + gs.TeamTerrorists().Score() + 1
 		bh.currentScore = utils.PadLeft(strconv.Itoa(bh.roundNumber), "0", 2) + "_ct_" +
 			utils.PadLeft(strconv.Itoa(gs.TeamCounterTerrorists().Score()), "0", 2) +
 			"_t_" + utils.PadLeft(strconv.Itoa(gs.TeamTerrorists().Score()), "0", 2)
-
-		bh.roundStartTime = bh.currentTime
-
 		if !bh.isMatchEnded && bh.isMatchStarted {
 			if bh.roundNumber-1 < len(bh.playerMappings) {
 				bh.CropData(bh.roundNumber - 1)
@@ -215,10 +221,21 @@ func (bh *BasicHandler) RoundStartHandler(e events.RoundStart) {
 			bh.playerMappings = append(bh.playerMappings, currentMappings)
 
 			for _, subscriber := range bh.roundStartSubscribers {
-				subscriber.RoundStartHandler(e)
+				subscriber.RoundStartHandler(events.RoundStart{})
 			}
 		}
+
 	}
+
+}
+
+func (bh *BasicHandler) RoundStartHandler(e events.RoundStart) {
+	bh.UpdateTime()
+	bh.roundStartTime = bh.currentTime
+	if !bh.isMatchEnded && !bh.roundProcessed {
+		bh.RoundEndOfficialHandler(events.RoundEndOfficial{})
+	}
+	bh.createPreRoundStartInfo()
 
 }
 
@@ -248,32 +265,7 @@ func (bh *BasicHandler) RegisterRoundEndSubscriber(rs RoundEndSubscriber) {
 
 func (bh *BasicHandler) RoundEndHandler(e events.RoundEnd) {
 	bh.UpdateTime()
-	winTeam := e.Winner
-	tPoint := 0
-	ctPoint := 0
-	if winTeam == 2 {
-		bh.roundWinner = "t"
-		tPoint += 1
-	} else if winTeam == 3 {
-		bh.roundWinner = "ct"
-		ctPoint += 1
-	} else {
-		bh.roundWinner = "invalid"
-	}
-
-	gs := (*bh.parser).GameState()
-	if bh.roundNumber > 15 {
-		bh.terroristFirstTeamscore = gs.TeamCounterTerrorists().Score() + ctPoint
-		bh.ctFirstTeamScore = gs.TeamTerrorists().Score() + tPoint
-	} else {
-		bh.terroristFirstTeamscore = gs.TeamTerrorists().Score() + tPoint
-		bh.ctFirstTeamScore = gs.TeamCounterTerrorists().Score() + ctPoint
-	}
-	if bh.roundWinner == bh.matchPointTeam && bh.matchPointTeam != "" && bh.isMatchStarted {
-		bh.isMatchEnded = true
-	}
-
-	if bh.isValidRound && bh.isMatchStarted {
+	if bh.roundStructureCreated && bh.isMatchStarted {
 		for _, subscriber := range bh.roundEndSubscribers {
 			subscriber.RoundEndHandler(e)
 		}
@@ -293,7 +285,7 @@ func (bh *BasicHandler) RegisterGrenadeEventIfSubscriber(rs GrenadeEventIfSubscr
 
 func (bh *BasicHandler) GrenadeEventIfHandler(e events.GrenadeEventIf) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.grenadeEventIfSubscribers {
 			subscriber.GrenadeEventIfHandler(e)
 		}
@@ -310,16 +302,18 @@ func (bh *BasicHandler) RegisterRoundFreezetimeEndSubscriber(rs RoundFreezetimeE
 
 }
 
-func (bh *BasicHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
-	bh.UpdateTime()
-	bh.roundFreezeTime = false
-	if len(bh.playerMappings[bh.roundNumber-1]) > 0 && !bh.isMatchEnded {
-		bh.isValidRound = true
-	} else {
-		bh.isValidRound = false
-	}
-	parser := (*bh.parser)
-	if !bh.isMatchEnded && bh.isMatchStarted {
+//this is a workaround for replays that don't send freezetimeend event sometimes
+func (bh *BasicHandler) createRoundStructure() {
+
+	if bh.roundFreezeTime && bh.isValidRoundStart {
+		bh.roundFreezeTime = false
+		bh.roundProcessed = false
+		if len(bh.playerMappings[bh.roundNumber-1]) > 0 && !bh.isMatchEnded {
+			bh.roundStructureCreated = true
+		} else {
+			bh.roundStructureCreated = false
+		}
+		parser := (*bh.parser)
 		currentMappings := currentPlayerMappings(parser.GameState())
 		bh.playerMappings[len(bh.playerMappings)-1] = currentMappings
 		if bh.roundNumber-1 < len(bh.playerStats) {
@@ -332,9 +326,19 @@ func (bh *BasicHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
 		}
 
 		for _, subscriber := range bh.roundFreezeTimeEndSubscribers {
-			subscriber.RoundFreezetimeEndHandler(e)
+			subscriber.RoundFreezetimeEndHandler(events.RoundFreezetimeEnd{})
 		}
 	}
+
+}
+
+func (bh *BasicHandler) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd) {
+	bh.UpdateTime()
+
+	// if !bh.isMatchEnded && bh.isMatchStarted && bh.isValidRoundStart {
+
+	// 	bh.createRoundStructure()
+	// }
 }
 
 func (bh *BasicHandler) RegisterBombPlantedSubscriber(rs BombPlantedSubscriber) {
@@ -349,7 +353,7 @@ func (bh *BasicHandler) RegisterBombPlantedSubscriber(rs BombPlantedSubscriber) 
 
 func (bh *BasicHandler) BombPlantedHandler(e events.BombPlanted) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.bombPlantedSubscribers {
 			subscriber.BombPlantedHandler(e)
 		}
@@ -368,7 +372,7 @@ func (bh *BasicHandler) RegisterFrameDoneSubscriber(rs FrameDoneSubscriber) {
 
 func (bh *BasicHandler) FrameDoneHandler(e events.FrameDone) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.frameDoneSubscribers {
 			subscriber.FrameDoneHandler(e)
 		}
@@ -387,11 +391,11 @@ func (bh *BasicHandler) RegisterRoundEndOfficialSubscriber(rs RoundEndOfficialSu
 
 func (bh *BasicHandler) RoundEndOfficialHandler(e events.RoundEndOfficial) {
 	bh.UpdateTime()
-
-	if bh.isMatchStarted && bh.isValidRound {
+	if bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.roundEndOfficialSubscribers {
 			subscriber.RoundEndOfficialHandler(e)
 		}
+		bh.roundProcessed = true
 	}
 }
 
@@ -407,7 +411,7 @@ func (bh *BasicHandler) RegisterBombDroppedSubscriber(rs BombDroppedSubscriber) 
 
 func (bh *BasicHandler) BombDroppedHandler(e events.BombDropped) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.bombDroppedSubscribers {
 			subscriber.BombDroppedHandler(e)
 		}
@@ -426,7 +430,7 @@ func (bh *BasicHandler) RegisterBombDefusedSubscriber(rs BombDefusedSubscriber) 
 
 func (bh *BasicHandler) BombDefusedHandler(e events.BombDefused) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.bombDefusedSubscribers {
 			subscriber.BombDefusedHandler(e)
 		}
@@ -445,7 +449,7 @@ func (bh *BasicHandler) RegisterFlashExplodeSubscriber(rs FlashExplodeSubscriber
 
 func (bh *BasicHandler) FlashExplodeHandler(e events.FlashExplode) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.flashExplodeSubscribers {
 			subscriber.FlashExplodeHandler(e)
 		}
@@ -464,7 +468,7 @@ func (bh *BasicHandler) RegisterBombPickupSubscriber(rs BombPickupSubscriber) {
 
 func (bh *BasicHandler) BombPickupHandler(e events.BombPickup) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.bombPickupSubscribers {
 			subscriber.BombPickupHandler(e)
 		}
@@ -483,7 +487,17 @@ func (bh *BasicHandler) RegisterFootstepSubscriber(rs FootstepSubscriber) {
 
 func (bh *BasicHandler) FootstepHandler(e events.Footstep) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if bh.isValidRoundStart && !bh.roundWinnerDetermined && !bh.roundStructureCreated {
+
+		bh.createRoundStructure()
+	} else if bh.isValidRoundStart && bh.scoreUpdated && !bh.roundWinnerDetermined {
+		bh.createPreRoundStartInfo()
+		if !bh.roundStructureCreated {
+			bh.createRoundStructure()
+		}
+
+	}
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.footstepSubscribers {
 			subscriber.FootstepHandler(e)
 		}
@@ -502,11 +516,45 @@ func (bh *BasicHandler) RegisterScoreUpdatedSubscriber(rs ScoreUpdatedSubscriber
 
 func (bh *BasicHandler) ScoreUpdatedHandler(e events.ScoreUpdated) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
-		for _, subscriber := range bh.scoreUpdatedSubscribers {
-			subscriber.ScoreUpdatedHandler(e)
+	bh.scoreUpdated = true
+	if !bh.roundWinnerDetermined && bh.roundStructureCreated {
+		winTeam := e.TeamState.Team()
+		tPoint := 0
+		ctPoint := 0
+		bh.isValidRoundStart = false
+		if winTeam == common.TeamTerrorists {
+			bh.roundWinner = "t"
+			tPoint += 1
+		} else if winTeam == common.TeamCounterTerrorists {
+			bh.roundWinner = "ct"
+			ctPoint += 1
+		} else {
+			bh.roundWinner = "invalid"
+		}
+
+		gs := (*bh.parser).GameState()
+		if bh.roundNumber > 15 {
+			bh.terroristFirstTeamscore = gs.TeamCounterTerrorists().Score() + ctPoint
+			bh.ctFirstTeamScore = gs.TeamTerrorists().Score() + tPoint
+		} else {
+			bh.terroristFirstTeamscore = gs.TeamTerrorists().Score() + tPoint
+			bh.ctFirstTeamScore = gs.TeamCounterTerrorists().Score() + ctPoint
+		}
+		if bh.roundWinner == bh.matchPointTeam && bh.matchPointTeam != "" && bh.isMatchStarted {
+			bh.isMatchEnded = true
+		}
+		if bh.isMatchStarted {
+			for _, subscriber := range bh.scoreUpdatedSubscribers {
+				subscriber.ScoreUpdatedHandler(e)
+			}
+		}
+		bh.roundWinnerDetermined = true
+
+		if bh.isMatchEnded {
+			bh.RoundEndOfficialHandler(events.RoundEndOfficial{})
 		}
 	}
+
 }
 
 func (bh *BasicHandler) RegisterHeExplodeSubscriber(rs HeExplodeSubscriber) {
@@ -521,7 +569,7 @@ func (bh *BasicHandler) RegisterHeExplodeSubscriber(rs HeExplodeSubscriber) {
 
 func (bh *BasicHandler) HeExplodeHandler(e events.HeExplode) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.heExplodeSubscribers {
 			subscriber.HeExplodeHandler(e)
 		}
@@ -540,7 +588,7 @@ func (bh *BasicHandler) RegisterItemDropSubscriber(rs ItemDropSubscriber) {
 
 func (bh *BasicHandler) ItemDropHandler(e events.ItemDrop) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.itemDropSubscribers {
 			subscriber.ItemDropHandler(e)
 		}
@@ -559,7 +607,7 @@ func (bh *BasicHandler) RegisterItemPickupSubscriber(rs ItemPickupSubscriber) {
 
 func (bh *BasicHandler) ItemPickupHandler(e events.ItemPickup) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.itemPickupSubscribers {
 			subscriber.ItemPickupHandler(e)
 		}
@@ -578,7 +626,7 @@ func (bh *BasicHandler) RegisterKillSubscriber(rs KillSubscriber) {
 
 func (bh *BasicHandler) KillHandler(e events.Kill) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.killSubscribers {
 			subscriber.KillHandler(e)
 		}
@@ -597,7 +645,7 @@ func (bh *BasicHandler) RegisterPlayerFlashedSubscriber(rs PlayerFlashedSubscrib
 
 func (bh *BasicHandler) PlayerFlashedHandler(e events.PlayerFlashed) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.playerFlashedSubscribers {
 			subscriber.PlayerFlashedHandler(e)
 		}
@@ -615,7 +663,7 @@ func (bh *BasicHandler) RegisterPlayerHurtSubscriber(rs PlayerHurtSubscriber) {
 
 func (bh *BasicHandler) PlayerHurtHandler(e events.PlayerHurt) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.playerHurtSubscribers {
 			subscriber.PlayerHurtHandler(e)
 		}
@@ -634,7 +682,7 @@ func (bh *BasicHandler) RegisterWeaponReloadSubscriber(rs WeaponReloadSubscriber
 
 func (bh *BasicHandler) WeaponReloadHandler(e events.WeaponReload) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.weaponReloadSubscribers {
 			subscriber.WeaponReloadHandler(e)
 		}
@@ -653,7 +701,7 @@ func (bh *BasicHandler) RegisterIsWarmupPeriodChangedSubscriber(rs IsWarmupPerio
 
 func (bh *BasicHandler) IsWarmupPeriodChangedHandler(e events.IsWarmupPeriodChanged) {
 	bh.UpdateTime()
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.roundStructureCreated {
 		for _, subscriber := range bh.isWarmupPeriodChangedSubscribers {
 			subscriber.IsWarmupPeriodChangedHandler(e)
 		}
@@ -673,7 +721,7 @@ func (bh *BasicHandler) RegisterPlayerTeamChangeSubscriber(rs PlayerTeamChangeSu
 func (bh *BasicHandler) PlayerTeamChangeHandler(e events.PlayerTeamChange) {
 	bh.UpdateTime()
 
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.isValidRoundStart {
 
 		// if e.NewTeam == common.TeamCounterTerrorists || e.NewTeam == common.TeamTerrorists {
 		// 	if _, ok := bh.playerMappings[bh.roundNumber-1][e.Player.SteamID64]; !ok {
@@ -699,7 +747,7 @@ func (bh *BasicHandler) RegisterPlayerDisconnectedSubscriber(rs PlayerDisconnect
 func (bh *BasicHandler) PlayerDisconnectedHandler(e events.PlayerDisconnected) {
 	bh.UpdateTime()
 
-	if !bh.isMatchEnded && bh.isMatchStarted {
+	if !bh.isMatchEnded && bh.isMatchStarted && bh.isValidRoundStart {
 
 		for _, subscriber := range bh.playerDisconnectedSubscribers {
 			subscriber.PlayerDisconnectedHandler(e)

@@ -9,6 +9,8 @@ func GetRoundTime(p dem.Parser, roundStartTime float64, tickRate int) float64 {
 }
 
 func GetCurrentTime(p dem.Parser, tickRate int) float64 {
-	currentFrame := p.CurrentFrame()
-	return float64(currentFrame) / float64(tickRate)
+	// currentFrame := p.CurrentFrame()
+	currentTime := p.CurrentTime()
+
+	return currentTime.Seconds()
 }

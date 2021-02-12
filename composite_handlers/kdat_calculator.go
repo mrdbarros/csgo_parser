@@ -57,7 +57,6 @@ func (kc *KDATCalculator) Register(bh *BasicHandler) error {
 	bh.RegisterRoundStartSubscriber(interface{}(kc).(RoundStartSubscriber))
 	bh.RegisterKillSubscriber(interface{}(kc).(KillSubscriber))
 	bh.RegisterRoundEndOfficialSubscriber(interface{}(kc).(RoundEndOfficialSubscriber))
-	bh.RegisterRoundEndSubscriber(interface{}(kc).(RoundEndSubscriber))
 	bh.RegisterRoundFreezetimeEndSubscriber(interface{}(kc).(RoundFreezetimeEndSubscriber))
 	kc.baseStatsHeaders = []string{"Kills", "Kills_CT", "Kills_T",
 		"Assists", "Assists_T", "Assists_CT",
@@ -107,8 +106,13 @@ func (kc *KDATCalculator) RoundFreezetimeEndHandler(e events.RoundFreezetimeEnd)
 	kc.AddNewRound()
 }
 
-func (kc *KDATCalculator) processClutchSituation(winnerTeam common.Team) {
-
+func (kc *KDATCalculator) processClutchSituation(winnerTeamName string) {
+	var winnerTeam common.Team
+	if winnerTeamName == "t" {
+		winnerTeam = common.TeamTerrorists
+	} else if winnerTeamName == "ct" {
+		winnerTeam = common.TeamCounterTerrorists
+	}
 	//check for clutch
 	var numberOfOpponents string
 	for _, clutchSituation := range kc.clutchSituations {
@@ -124,11 +128,9 @@ func (kc *KDATCalculator) processClutchSituation(winnerTeam common.Team) {
 
 }
 
-func (kc *KDATCalculator) RoundEndHandler(e events.RoundEnd) {
-	kc.processClutchSituation(e.Winner)
-	if kc.basicHandler.isMatchEnded {
-		kc.processRoundEnd()
-	}
+func (kc *KDATCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+
+	kc.processRoundEnd()
 }
 
 func (kc *KDATCalculator) processRoundEnd() {
@@ -137,6 +139,7 @@ func (kc *KDATCalculator) processRoundEnd() {
 	var playerDeath float64
 	var playerWasTraded float64
 	var stringKills string
+	kc.processClutchSituation(kc.basicHandler.roundWinner)
 	roundID := len(kc.playerStats) - 1
 
 	for _, playerMapping := range kc.basicHandler.playerMappings[roundID] {
@@ -161,28 +164,41 @@ func (kc *KDATCalculator) processRoundEnd() {
 	}
 }
 
-func (kc *KDATCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
-	if !kc.basicHandler.isMatchEnded {
-		kc.processRoundEnd()
-	}
+// func (kc *KDATCalculator) RoundEndOfficialHandler(e events.RoundEndOfficial) {
+// 	if !kc.basicHandler.isMatchEnded {
+// 		kc.processRoundEnd()
+// 	}
 
-}
+// }
 
 func (kc *KDATCalculator) addKDAInfo(e events.Kill) {
+	var addAmmount float64
 	if e.Killer != nil {
-		kc.addToPlayerStat(e.Killer, 1, "Kills")
-		if e.IsHeadshot {
-			kc.addToPlayerStat(e.Killer, 1, "HS Kills")
+		if e.Killer.Team != e.Victim.Team {
+			addAmmount = 1
+			if e.IsHeadshot {
+				kc.addToPlayerStat(e.Killer, 1, "HS Kills")
+			}
+		} else {
+			addAmmount = -1
 		}
+		kc.addToPlayerStat(e.Killer, addAmmount, "Kills")
+
 	}
 
 	if e.Assister != nil {
-		kc.addToPlayerStat(e.Assister, 1, "Assists")
+		if e.Assister.Team != e.Victim.Team {
+			kc.addToPlayerStat(e.Assister, 1, "Assists")
+		}
+
 	}
 
 	if e.Victim != nil {
 		kc.addToPlayerStat(e.Victim, 1, "Deaths")
 		kc.addDeath(e.Victim)
+		if e.Killer == nil && e.Weapon.Type != common.EqBomb {
+			kc.addToPlayerStat(e.Victim, -1, "Kills")
+		}
 	}
 
 }
@@ -206,16 +222,14 @@ func (kc *KDATCalculator) addDeath(victim *common.Player) {
 }
 
 func (kc *KDATCalculator) addFirstDuelInfo(e events.Kill) {
-	if kc.isFirstDuel {
-		if e.Killer != nil {
+	if kc.isFirstDuel && e.Killer != nil && e.Victim != nil {
+		if e.Killer.Team != e.Victim.Team {
 			kc.setPlayerStat(e.Killer, 1, "First Kills")
 			kc.setPlayerStat(e.Killer, 1, "First Kill Attempts")
-		}
-		if e.Victim != nil {
 			kc.setPlayerStat(e.Victim, 1, "First Kill Attempts")
+			kc.isFirstDuel = false
 		}
 
-		kc.isFirstDuel = false
 	}
 
 }
