@@ -265,7 +265,7 @@ func (ih *InfoGenerationHandler) GetFullMatchStatistics() (data [][]string) {
 	data = append(data, []string{"Name", "SteamID"})
 	dbConn := database.OpenDBConn()
 
-	matchID := database.InsertMatch(dbConn, ih.basicHandler.fileName, ih.demFileHash, ih.basicHandler.mapMetadata.Name,
+	matchID := dbConn.InsertMatch(ih.basicHandler.fileName, ih.demFileHash, ih.basicHandler.mapMetadata.Name,
 		ih.basicHandler.terroristFirstTeamscore, ih.basicHandler.ctFirstTeamScore, ih.basicHandler.matchDatetime, true)
 
 	var allPlayers map[uint64]playerMapping
@@ -286,7 +286,7 @@ func (ih *InfoGenerationHandler) GetFullMatchStatistics() (data [][]string) {
 			utils.CheckError(err)
 
 			if j == 0 {
-				database.InsertPlayer(dbConn, playerMapping.playerObject.SteamID64, playerMapping.playerObject.Name)
+				dbConn.InsertPlayer(playerMapping.playerObject.SteamID64, playerMapping.playerObject.Name)
 				stringData = append([]string{playerMapping.playerObject.Name,
 					strconv.FormatUint(playerMapping.playerObject.SteamID64, 10)}, utils.FloatSliceToString(tempData)...)
 			} else {
@@ -295,9 +295,9 @@ func (ih *InfoGenerationHandler) GetFullMatchStatistics() (data [][]string) {
 
 			if firstPlayer {
 				data[0] = append(data[0], tempHeader...)
-				statsIDs = append(statsIDs, database.InsertBaseStatistics(dbConn, tempHeader))
+				statsIDs = append(statsIDs, dbConn.InsertBaseStatistics(tempHeader))
 			}
-			database.InsertStatisticsFacts(dbConn, statsIDs[j], tempData, player.SteamID64, matchID)
+			dbConn.InsertStatisticsFacts(statsIDs[j], tempData, player.SteamID64, matchID)
 
 		}
 

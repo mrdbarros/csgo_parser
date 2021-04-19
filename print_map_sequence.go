@@ -42,7 +42,7 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	hashString := hex.EncodeToString(hasher.Sum(nil))
 
 	dbConn := database.OpenDBConn()
-	skipProcessedFile := false
+	skipProcessedFile := true
 
 	f, err = os.Open(demPath)
 	utils.CheckError(err)
@@ -56,7 +56,7 @@ func ProcessDemoFile(demPath string, fileID int, destDir string, tickRate int) {
 	rootMatchPath := destDir + "/" + header.MapName + "/" + hashString
 	dirExists, _ := utils.Exists(rootMatchPath)
 
-	if database.CheckIfProcessed(dbConn, hashString) && skipProcessedFile && dirExists {
+	if dbConn.CheckIfProcessed(hashString) && skipProcessedFile && dirExists {
 		fmt.Println("Demo already processed, skipping...")
 		dbConn.Close()
 		return

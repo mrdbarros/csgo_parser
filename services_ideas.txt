@@ -1,0 +1,20 @@
+service in Go that queries stats DB
+query:
+
+getStats:
+	request{
+		stats:[]
+		tournaments:[]
+		matches:[]
+		players:[]
+		startDate:[]
+		endDate:[]
+		}
+	response{
+    stats:{
+      player_id:[],
+      player_name:[],
+      statistic_name:[],
+      statistic_value:[]
+    }
+  }

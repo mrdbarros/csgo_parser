@@ -11,10 +11,11 @@
       "mode": "auto",
       "program": "${fileDirname}",
       "env": {},
-      "args": ["-mode=file",
+      "args": [
+        "-mode=file",
         "/home/marcel/projetos/data/csgo_analyze/replays/fev/2021-02-09__0059__1__10768066__de_vertigo__timesant__vs__c4base.dem",
         "/home/marcel/projetos/data/csgo_analyze/processed/test",
-        64,
+        64
       ]
     },
     {
@@ -24,10 +25,11 @@
       "mode": "auto",
       "program": "${fileDirname}",
       "env": {},
-      "args": ["-mode=dir",
-        "/home/marcel/projetos/data/csgo_analyze/replays/fev",
+      "args": [
+        "-mode=dir",
+        "/home/marcel/projetos/data/csgo_analyze/replays/abr",
         "/home/marcel/projetos/data/csgo_analyze/camp",
-        64,
+        64
       ]
     },
     {
@@ -50,8 +52,7 @@
       "mode": "auto",
       "program": "${fileDirname}/utils",
       "env": {},
-      "args": [
-      ]
+      "args": []
     }
   ]
 }
